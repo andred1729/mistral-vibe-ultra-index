@@ -123,6 +123,8 @@ class AcpCommandController:
                 response = await self._set_lean(session, installed=False)
             case AcpCommandKind.DATA_RETENTION:
                 response = await self._reply(session, DATA_RETENTION_MESSAGE)
+            case AcpCommandKind.INDEX:
+                response = await self._index(session, arguments)
         return response
 
     async def message(
@@ -228,6 +230,66 @@ class AcpCommandController:
             else "Session logging is disabled in configuration."
         )
         return await self._reply(session, message)
+
+    async def _index(self, session: AcpSession, arguments: str) -> PromptResponse:
+        subcommand = arguments.strip().lower() or "status"
+        resource = session.app_server.resources.repository_index
+        try:
+            match subcommand:
+                case "status":
+                    view = await resource.status()
+                    action = None
+                case "refresh":
+                    result = await resource.refresh()
+                    view = result.index
+                    action = (
+                        "Refresh started" if result.started else "Build already running"
+                    )
+                case "rebuild":
+                    result = await resource.rebuild()
+                    view = result.index
+                    action = (
+                        "Rebuild started" if result.started else "Build already running"
+                    )
+                case "clear":
+                    result = await resource.clear()
+                    view = result.index
+                    action = (
+                        "Clear and rebuild started"
+                        if result.started
+                        else "Build already running"
+                    )
+                case "cancel":
+                    result = await resource.cancel()
+                    view = result.index
+                    action = (
+                        "Cancellation requested"
+                        if result.cancelled
+                        else "No build is running"
+                    )
+                case _:
+                    return await self._reply(
+                        session, "Usage: `/index [status|refresh|rebuild|cancel|clear]`"
+                    )
+        except AppServerResponseError as exc:
+            return await self._reply(session, exc.error.message)
+
+        generation = str(view.generation) if view.generation is not None else "none"
+        root = f"`{view.root}`" if view.root is not None else "not resolved"
+        error = f"\n- **Error**: {view.error}" if view.error is not None else ""
+        detail = f"\n\n{action}." if action is not None else ""
+        return await self._reply(
+            session,
+            "## Repository Index\n\n"
+            f"- **Status**: {view.status}\n"
+            f"- **Phase**: {view.phase}\n"
+            f"- **Generation**: {generation}\n"
+            f"- **Root**: {root}\n"
+            f"- **Files**: {view.file_count:,}\n"
+            f"- **Progress**: {view.files_processed:,}/{view.files_total:,}\n"
+            f"- **Dirty**: {'yes' if view.dirty else 'no'}"
+            f"{error}{detail}",
+        )
 
     async def _mcp(self, session: AcpSession, arguments: str) -> PromptResponse:
         parts = arguments.split(None, 1)

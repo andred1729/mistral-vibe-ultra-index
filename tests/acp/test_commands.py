@@ -77,6 +77,23 @@ async def test_help_command_uses_the_acp_adapter_without_starting_a_turn(
 
 
 @pytest.mark.asyncio
+async def test_index_command_is_advertised_and_validates_subcommands(
+    acp_agent_loop: VibeAcpAgent,
+) -> None:
+    created = await acp_agent_loop.new_session(cwd=str(Path.cwd()), mcp_servers=[])
+
+    response = await acp_agent_loop.prompt(
+        session_id=created.session_id,
+        prompt=[TextContentBlock(type="text", text="/index unknown")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert _texts(acp_agent_loop)[-1] == (
+        "Usage: `/index [status|refresh|rebuild|cancel|clear]`"
+    )
+
+
+@pytest.mark.asyncio
 async def test_builtin_command_preserves_the_client_message_id(
     acp_agent_loop: VibeAcpAgent,
 ) -> None:

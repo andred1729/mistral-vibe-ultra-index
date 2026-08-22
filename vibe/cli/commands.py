@@ -134,6 +134,14 @@ class CommandRegistry:
                 handler="_show_status",
                 side_channel=True,
             ),
+            "index": Command(
+                aliases=frozenset(["/index"]),
+                description=(
+                    "Show or manage the passive repository index; subcommands: "
+                    "status, refresh, rebuild, cancel, clear"
+                ),
+                handler="_index_command",
+            ),
             "whoami": Command(
                 aliases=frozenset(["/whoami"]),
                 description="Display the Mistral signed-in user, workspace, and plan",

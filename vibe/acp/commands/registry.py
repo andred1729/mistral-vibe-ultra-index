@@ -25,6 +25,7 @@ class AcpCommandKind(StrEnum):
     LEANSTALL = auto()
     UNLEANSTALL = auto()
     DATA_RETENTION = auto()
+    INDEX = auto()
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,12 @@ def _build_commands() -> dict[str, AcpCommand]:
             name="log",
             description="Show path to current session log directory",
             kind=AcpCommandKind.LOG,
+        ),
+        "index": AcpCommand(
+            name="index",
+            description="Show or manage the passive repository index",
+            kind=AcpCommandKind.INDEX,
+            input_hint="status | refresh | rebuild | cancel | clear",
         ),
         "mcp": AcpCommand(
             name="mcp",

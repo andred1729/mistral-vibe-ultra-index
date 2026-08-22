@@ -3285,6 +3285,78 @@ class VibeApp(App):  # noqa: PLR0904
 """
         await self._mount_and_scroll(UserCommandMessage(status_text))
 
+    async def _index_command(self, cmd_args: str = "", **kwargs: Any) -> None:
+        subcommand = cmd_args.strip().lower() or "status"
+        resource = self.app_server.resources.repository_index
+        try:
+            match subcommand:
+                case "status":
+                    view = await resource.status()
+                    action = None
+                case "refresh":
+                    response = await resource.refresh()
+                    view = response.index
+                    action = (
+                        "Refresh started"
+                        if response.started
+                        else "Build already running"
+                    )
+                case "rebuild":
+                    response = await resource.rebuild()
+                    view = response.index
+                    action = (
+                        "Rebuild started"
+                        if response.started
+                        else "Build already running"
+                    )
+                case "clear":
+                    response = await resource.clear()
+                    view = response.index
+                    action = (
+                        "Clear and rebuild started"
+                        if response.started
+                        else "Build already running"
+                    )
+                case "cancel":
+                    response = await resource.cancel()
+                    view = response.index
+                    action = (
+                        "Cancellation requested"
+                        if response.cancelled
+                        else "No build is running"
+                    )
+                case _:
+                    await self._mount_and_scroll(
+                        ErrorMessage(
+                            "Usage: `/index [status|refresh|rebuild|cancel|clear]`",
+                            collapsed=self._tools_collapsed,
+                        )
+                    )
+                    return
+        except AppServerResponseError as exc:
+            await self._mount_and_scroll(
+                ErrorMessage(exc.error.message, collapsed=self._tools_collapsed)
+            )
+            return
+
+        generation = str(view.generation) if view.generation is not None else "none"
+        root = f"`{view.root}`" if view.root is not None else "not resolved"
+        detail = f"\n\n{action}." if action is not None else ""
+        error = f"\n- **Error**: {view.error}" if view.error is not None else ""
+        await self._mount_and_scroll(
+            UserCommandMessage(
+                "## Repository Index\n\n"
+                f"- **Status**: {view.status}\n"
+                f"- **Phase**: {view.phase}\n"
+                f"- **Generation**: {generation}\n"
+                f"- **Root**: {root}\n"
+                f"- **Files**: {view.file_count:,}\n"
+                f"- **Progress**: {view.files_processed:,}/{view.files_total:,}\n"
+                f"- **Dirty**: {'yes' if view.dirty else 'no'}"
+                f"{error}{detail}"
+            )
+        )
+
     async def _show_whoami(self, **kwargs: Any) -> None:
         loading = LoadingWidget(status="Loading", show_hint=False)
         await self._loading_area.mount(loading)
