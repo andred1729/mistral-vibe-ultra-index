@@ -142,7 +142,13 @@ def suggest_repository_queries(
         )
 
     if definition := next(
-        (match for match in matches if match.relationship == "defines"), None
+        (
+            match
+            for match in matches
+            if match.relationship == "defines"
+            and match.module_role is not RepositoryModuleRole.TEST
+        ),
+        None,
     ):
         suggestions.append(
             RepositoryQuerySuggestion(

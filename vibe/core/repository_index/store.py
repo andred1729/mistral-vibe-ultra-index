@@ -763,10 +763,12 @@ class RepositoryIndexStore:
                         if mode is RepositorySearchMode.AUTO
                         else direction
                     ),
+                    query=query,
                     path_prefix=path_prefix,
                     importance=importance,
                     seed_paths=seed_paths,
-                    rows=(*structural_rows, *lexical_rows, *dependency_rows),
+                    root_rows=(*lexical_rows, *structural_rows),
+                    rows=(*lexical_rows, *structural_rows, *dependency_rows),
                 )
         except sqlite3.DatabaseError as exc:
             raise RepositoryIndexCorruptError(
@@ -1056,30 +1058,25 @@ def _search_context(
     *,
     mode: RepositorySearchMode,
     direction: RepositoryDependencyDirection,
+    query: str,
     path_prefix: str | None,
     importance: dict[str, float],
     seed_paths: set[str],
+    root_rows: Sequence[tuple[Any, ...]],
     rows: Sequence[tuple[Any, ...]],
 ) -> _SearchContext:
     paths = {str(row[0]) for row in rows}
     incoming = _incoming_components(connection, generation_id, paths)
     if mode not in {RepositorySearchMode.AUTO, RepositorySearchMode.DEPENDENCY}:
         return _SearchContext(incoming_components=incoming, dependency_trees=())
-    candidates = tuple(
-        dict.fromkeys(
-            str(row[0])
-            for row in rows
-            if _matches_path_filter(str(row[0]), path_prefix)
+    if mode is RepositorySearchMode.DEPENDENCY:
+        roots = tuple(
+            sorted(seed_paths, key=lambda path: _tree_root_key(path, importance))
+        )[:_MAX_DEPENDENCY_TREE_ROOTS]
+    else:
+        roots = _auto_tree_roots(
+            root_rows, query=query, path_prefix=path_prefix, importance=importance
         )
-    )
-    root_candidates = (
-        tuple(sorted(seed_paths))
-        if mode is RepositorySearchMode.DEPENDENCY
-        else candidates
-    )
-    roots = tuple(
-        sorted(root_candidates, key=lambda path: _tree_root_key(path, importance))
-    )[:_MAX_DEPENDENCY_TREE_ROOTS]
     return _SearchContext(
         incoming_components=incoming,
         dependency_trees=_dependency_trees(
@@ -1188,9 +1185,36 @@ def _escape_like(value: str) -> str:
 
 
 def _tree_root_key(path: str, importance: dict[str, float]) -> tuple[bool, float, str]:
-    parts = PurePosixPath(path).parts
-    is_test = any(part == "tests" or part.startswith("test_") for part in parts)
-    return is_test, -importance.get(path, 0.0), path
+    return _is_test_path(path), -importance.get(path, 0.0), path
+
+
+def _auto_tree_roots(
+    rows: Sequence[tuple[Any, ...]],
+    *,
+    query: str,
+    path_prefix: str | None,
+    importance: dict[str, float],
+) -> tuple[str, ...]:
+    evidence: dict[str, list[str]] = defaultdict(list)
+    for row in rows:
+        path = str(row[0])
+        if _matches_path_filter(path, path_prefix):
+            evidence[path].append(str(row[3]))
+    concepts = repository_query_concepts(query)
+
+    def root_key(path: str) -> tuple[int, bool, float, str]:
+        combined = " ".join((path, *evidence[path])).casefold()
+        coverage = sum(concept in combined for concept in concepts)
+        return -coverage, _is_test_path(path), -importance.get(path, 0.0), path
+
+    return tuple(sorted(evidence, key=root_key))[:_MAX_DEPENDENCY_TREE_ROOTS]
+
+
+def _is_test_path(path: str) -> bool:
+    return any(
+        part == "tests" or part.startswith("test_")
+        for part in PurePosixPath(path).parts
+    )
 
 
 def _render_dependency_tree(
@@ -1416,7 +1440,15 @@ def _structural_rows(
         (generation_id, query, query, _MAX_IMPACT_DEFINITIONS),
     ).fetchall()
 
-    target_paths = {str(row[0]) for row in definition_rows}
+    definition_targets: dict[str, tuple[str, ...]] = {}
+    for row in definition_rows:
+        target_path = str(row[0])
+        target = f"symbol:{target_path}#{row[3]}"
+        definition_targets[target_path] = (
+            *definition_targets.get(target_path, ()),
+            target,
+        )
+    target_paths = set(definition_targets)
     target_paths.update(
         str(row[0])
         for row in connection.execute(
@@ -1428,27 +1460,40 @@ def _structural_rows(
         return definition_rows[:max_results]
     impact_rows: list[tuple[Any, ...]] = list(definition_rows)
     for target_path in sorted(target_paths):
+        symbol_targets = definition_targets.get(target_path, ())
+        if symbol_targets:
+            placeholders = ",".join("?" for _ in symbol_targets)
+            dependency_predicate = (
+                "((e.kind = 'imports' AND e.target = ? "
+                "AND e.evidence LIKE ? ESCAPE '\\') "
+                "OR (e.kind IN ('references', 'calls', 'inherits') "
+                f"AND e.target IN ({placeholders})))"
+            )
+            dependency_params = (
+                target_path,
+                f"%{_escape_like(query.rsplit('.', maxsplit=1)[-1])}%",
+                *symbol_targets,
+            )
+        else:
+            dependency_predicate = (
+                "(e.target = ? OR e.target LIKE ?) "
+                "AND e.kind IN ('imports', 'references', 'calls', 'inherits')"
+            )
+            dependency_params = (target_path, f"symbol:{target_path}#%")
         impact_rows.extend(
             connection.execute(
-                """
+                f"""
                 SELECT e.source, COALESCE(e.line, 1), COALESCE(e.line, 1),
                        COALESCE(e.evidence, e.source),
                        'dependent_via_' || e.kind,
                        'direct dependency graph edge'
                 FROM graph_edges AS e
                 WHERE e.generation_id = ? AND e.source != ?
-                  AND (e.target = ? OR e.target LIKE ?)
-                  AND e.kind IN ('imports', 'references', 'calls', 'inherits')
+                  AND {dependency_predicate}
                 ORDER BY e.source, e.line
                 LIMIT ?
                 """,
-                (
-                    generation_id,
-                    target_path,
-                    target_path,
-                    f"symbol:{target_path}#%",
-                    max_results,
-                ),
+                (generation_id, target_path, *dependency_params, max_results),
             ).fetchall()
         )
         impact_rows.extend(

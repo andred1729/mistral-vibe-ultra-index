@@ -78,7 +78,9 @@ async def test_impact_mode_returns_direct_dependents_and_related_tests(
     (root / "tests").mkdir()
     Repo.init(root, initial_branch="main")
     (root / "pkg" / "service.py").write_text(
-        "def shared_service():\n    return 1\n", encoding="utf-8"
+        "def shared_service():\n    return 1\n\n"
+        "def unrelated_service():\n    return 2\n",
+        encoding="utf-8",
     )
     (root / "pkg" / "consumer.py").write_text(
         "from pkg.service import shared_service\nshared_service()\n", encoding="utf-8"
@@ -89,6 +91,10 @@ async def test_impact_mode_returns_direct_dependents_and_related_tests(
     (root / "apps" / "entry.py").write_text(
         "from pkg.service import shared_service\n", encoding="utf-8"
     )
+    (root / "apps" / "unrelated.py").write_text(
+        "from pkg.service import unrelated_service\nunrelated_service()\n",
+        encoding="utf-8",
+    )
     service = RepositoryIndexService(root, tmp_path / "indexes")
 
     result = await service.search(
@@ -98,6 +104,7 @@ async def test_impact_mode_returns_direct_dependents_and_related_tests(
     relationships = {(match.path, match.relationship) for match in result.matches}
     assert ("pkg/consumer.py", "dependent_via_imports") in relationships
     assert any(path == "tests/test_service.py" for path, _ in relationships)
+    assert all(path != "apps/unrelated.py" for path, _ in relationships)
     assert result.structural_coverage
     assert result.dependency_trees == ()
     definition = next(
@@ -132,7 +139,6 @@ async def test_dependency_mode_expands_two_hops_and_path_filters_results(
         "from pkg.middle import shared_api\n", encoding="utf-8"
     )
     service = RepositoryIndexService(root, tmp_path / "indexes")
-
     result = await service.search(
         "shared_api",
         mode=RepositorySearchMode.DEPENDENCY,
@@ -177,6 +183,9 @@ async def test_dependency_mode_expands_two_hops_and_path_filters_results(
         dependencies.dependency_trees[0].lines
     )
 
+    automatic = await service.search("MIDDLE_LAYER_MARKER", max_results=20)
+    assert automatic.dependency_trees[0].root == "pkg/middle.py"
+
     neighborhood = await service.search(
         "MIDDLE_LAYER_MARKER",
         mode=RepositorySearchMode.DEPENDENCY,
@@ -193,6 +202,26 @@ async def test_dependency_mode_expands_two_hops_and_path_filters_results(
         RepositoryDependencyDirection.DEPENDENCIES,
         RepositoryDependencyDirection.DEPENDENTS,
     }
+
+
+@pytest.mark.asyncio
+async def test_auto_search_does_not_suggest_impact_from_a_test_definition(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    (root / "tests").mkdir(parents=True)
+    Repo.init(root, initial_branch="main")
+    (root / "tests" / "test_feature.py").write_text(
+        "def test_feature_behavior():\n    pass\n", encoding="utf-8"
+    )
+    service = RepositoryIndexService(root, tmp_path / "indexes")
+
+    result = await service.search("test_feature_behavior", max_results=20)
+
+    assert all(
+        suggestion.mode is not RepositorySearchMode.IMPACT
+        for suggestion in result.suggestions
+    )
 
 
 @pytest.mark.asyncio
