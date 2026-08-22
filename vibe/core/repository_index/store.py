@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from collections.abc import Sequence
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import sqlite3
@@ -18,6 +19,7 @@ from vibe.core.repository_index.models import (
     IndexChunk,
     IndexGeneration,
     IndexStatus,
+    RepositoryDependencyTree,
     RepositoryMap,
     RepositoryMapEntry,
     RepositorySearchMatch,
@@ -40,9 +42,18 @@ _MAX_SEARCH_RESULTS = 100
 _MAX_IMPACT_DEFINITIONS = 5
 _MAX_MAP_FILES = 200
 _MAX_MAP_SYMBOLS_PER_FILE = 20
+_MAX_DEPENDENCY_TREE_ROOTS = 3
+_MAX_DEPENDENCY_TREE_DEPTH = 2
+_MAX_DEPENDENCY_TREE_NODES = 50
 
 
 class RepositoryIndexCorruptError(Exception): ...
+
+
+@dataclass(frozen=True, slots=True)
+class _SearchContext:
+    incoming_components: dict[str, frozenset[str]]
+    dependency_trees: tuple[RepositoryDependencyTree, ...]
 
 
 class RepositoryIndexStore:
@@ -722,13 +733,13 @@ class RepositoryIndexStore:
                         (generation.id,),
                     ).fetchall()
                 }
-                incoming_components = _incoming_components(
+                search_context = _search_context(
                     connection,
                     generation.id,
-                    {
-                        str(row[0])
-                        for row in (*lexical_rows, *structural_rows, *dependency_rows)
-                    },
+                    mode=mode,
+                    path_prefix=path_prefix,
+                    importance=importance,
+                    rows=(*structural_rows, *lexical_rows, *dependency_rows),
                 )
         except sqlite3.DatabaseError as exc:
             raise RepositoryIndexCorruptError(
@@ -785,7 +796,7 @@ class RepositoryIndexStore:
         matches, groups = group_repository_matches(
             rank_repository_matches(
                 add_module_boundaries(
-                    candidates, incoming_components=incoming_components
+                    candidates, incoming_components=search_context.incoming_components
                 ),
                 query=query,
                 importance=importance,
@@ -805,6 +816,7 @@ class RepositoryIndexStore:
             suggestions=suggest_repository_queries(
                 query=query, mode=mode, matches=matches, groups=groups
             ),
+            dependency_trees=search_context.dependency_trees,
             structural_coverage=generation.structural_file_count > 0,
         )
 
@@ -966,6 +978,113 @@ def _incoming_components(
     return incoming_component_map([
         (str(source), str(target)) for source, target in rows
     ])
+
+
+def _search_context(
+    connection: sqlite3.Connection,
+    generation_id: int,
+    *,
+    mode: RepositorySearchMode,
+    path_prefix: str | None,
+    importance: dict[str, float],
+    rows: Sequence[tuple[Any, ...]],
+) -> _SearchContext:
+    paths = {str(row[0]) for row in rows}
+    incoming = _incoming_components(connection, generation_id, paths)
+    if mode not in {RepositorySearchMode.AUTO, RepositorySearchMode.DEPENDENCY}:
+        return _SearchContext(incoming_components=incoming, dependency_trees=())
+    candidates = tuple(
+        dict.fromkeys(
+            str(row[0])
+            for row in rows
+            if _matches_path_filter(str(row[0]), path_prefix)
+        )
+    )
+    roots = tuple(
+        sorted(candidates, key=lambda path: _tree_root_key(path, importance))
+    )[:_MAX_DEPENDENCY_TREE_ROOTS]
+    return _SearchContext(
+        incoming_components=incoming,
+        dependency_trees=_dependency_trees(connection, generation_id, roots),
+    )
+
+
+def _dependency_trees(
+    connection: sqlite3.Connection, generation_id: int, roots: Sequence[str]
+) -> tuple[RepositoryDependencyTree, ...]:
+    adjacency: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    frontier = set(roots)
+    for _ in range(_MAX_DEPENDENCY_TREE_DEPTH):
+        if not frontier:
+            break
+        placeholders = ",".join("?" for _ in frontier)
+        rows = connection.execute(
+            "SELECT source, target, kind FROM graph_edges "
+            "WHERE generation_id = ? AND target IS NOT NULL "
+            "AND kind IN ('imports', 'inherits') "
+            f"AND source IN ({placeholders}) ORDER BY source, target, kind",
+            (generation_id, *sorted(frontier)),
+        ).fetchall()
+        next_frontier: set[str] = set()
+        for source_value, target_value, kind_value in rows:
+            source = str(source_value)
+            target = _graph_target_path(str(target_value))
+            if source == target:
+                continue
+            edge = (target, str(kind_value))
+            if edge not in adjacency[source]:
+                adjacency[source].append(edge)
+            next_frontier.add(target)
+        frontier = next_frontier
+    return tuple(_render_dependency_tree(root, adjacency) for root in roots)
+
+
+def _graph_target_path(target: str) -> str:
+    if target.startswith("symbol:"):
+        return target.removeprefix("symbol:").partition("#")[0]
+    return target
+
+
+def _tree_root_key(path: str, importance: dict[str, float]) -> tuple[bool, float, str]:
+    parts = PurePosixPath(path).parts
+    is_test = any(part == "tests" or part.startswith("test_") for part in parts)
+    return is_test, -importance.get(path, 0.0), path
+
+
+def _render_dependency_tree(
+    root: str, adjacency: dict[str, list[tuple[str, str]]]
+) -> RepositoryDependencyTree:
+    lines = [root]
+    visited = {root}
+    node_count = 1
+    truncated = False
+
+    def append_children(path: str, depth: int, prefix: str) -> None:
+        nonlocal node_count, truncated
+        children = adjacency.get(path, ())
+        for position, (child, kind) in enumerate(children):
+            if node_count >= _MAX_DEPENDENCY_TREE_NODES:
+                lines.append(f"{prefix}└── … truncated")
+                truncated = True
+                return
+            last = position == len(children) - 1
+            connector = "└──" if last else "├──"
+            cycle = child in visited
+            suffix = " [cycle]" if cycle else ""
+            lines.append(f"{prefix}{connector} [{kind}] {child}{suffix}")
+            node_count += 1
+            if cycle or depth == _MAX_DEPENDENCY_TREE_DEPTH:
+                continue
+            visited.add(child)
+            continuation = "    " if last else "│   "
+            append_children(child, depth + 1, prefix + continuation)
+            if truncated:
+                return
+
+    append_children(root, 1, "")
+    return RepositoryDependencyTree(
+        root=root, lines=tuple(lines), node_count=node_count, truncated=truncated
+    )
 
 
 def _score_reason(*, path: str, content: str, query: str) -> str:

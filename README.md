@@ -342,7 +342,11 @@ Vibe passively maintains a local repository index for the attached Git root.
 Before every model inference it validates or incrementally rebuilds an atomic
 generation containing text chunks, Python symbols, and dependency edges. The
 model uses the bounded `repo_search` tool for lexical, symbol, dependency, and
-impact queries; source files are not uploaded to build the index.
+impact queries; source files are not uploaded to build the index. Repository
+work begins with a task-shaped mapping query. Results identify feature, shared,
+test, and root modules, group matches by component, and suggest focused
+follow-up queries. Auto and dependency searches also include bounded, cycle-aware
+outgoing import/inheritance trees; impact searches provide the incoming view.
 
 Use `/index` (or `/index status`) to inspect generation, progress, and language
 coverage. `/index refresh`, `/index rebuild`, `/index cancel`, and `/index clear`

@@ -98,6 +98,7 @@ async def test_impact_mode_returns_direct_dependents_and_related_tests(
     assert ("pkg/consumer.py", "dependent_via_imports") in relationships
     assert any(path == "tests/test_service.py" for path, _ in relationships)
     assert result.structural_coverage
+    assert result.dependency_trees == ()
     definition = next(
         match for match in result.matches if match.path == "pkg/service.py"
     )
@@ -139,3 +140,9 @@ async def test_dependency_mode_expands_two_hops_and_path_filters_results(
         match.relationship.startswith("dependency_distance_")
         for match in result.matches
     )
+    assert result.dependency_trees[0].root == "apps/entry.py"
+    rendered_tree = "\n".join(result.dependency_trees[0].lines)
+    assert "[imports] pkg/middle.py" in rendered_tree
+    assert "[imports] pkg/base.py" in rendered_tree
+    assert result.dependency_trees[0].node_count == 3
+    assert not result.dependency_trees[0].truncated

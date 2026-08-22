@@ -223,6 +223,16 @@ class RepositoryQuerySuggestion(BaseModel):
     reason: str
 
 
+class RepositoryDependencyTree(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    root: str
+    direction: str = "outgoing"
+    lines: tuple[str, ...]
+    node_count: int
+    truncated: bool = False
+
+
 class RepositorySearchResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
@@ -233,6 +243,7 @@ class RepositorySearchResult(BaseModel):
     matches: tuple[RepositorySearchMatch, ...]
     groups: tuple[RepositorySearchGroup, ...] = ()
     suggestions: tuple[RepositoryQuerySuggestion, ...] = ()
+    dependency_trees: tuple[RepositoryDependencyTree, ...] = ()
     structural_coverage: bool = False
 
 
