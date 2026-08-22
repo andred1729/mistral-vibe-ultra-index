@@ -63,12 +63,8 @@ class RepoSearch(
         returned = len(result.matches)
         return ToolResultDisplay(
             success=True,
-            verb="Searched",
             message="Repo_Search",
-            suffix=(
-                f"· {returned} of {result.total_matches} matches "
-                f"· generation {result.generation.id}"
-            ),
+            suffix=f"{returned} of {result.total_matches} matches",
         )
 
     @classmethod

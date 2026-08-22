@@ -63,8 +63,8 @@ async def test_repo_search_reads_the_generation_pinned_by_the_agent_loop(
     assert "(" not in call_display.summary
 
     result_display = RepoSearch.format_result_display(result)
-    assert result_display.text == "Searched Repo_Search"
-    assert result_display.suffix == "· 1 of 1 matches · generation 1"
+    assert result_display.text == "Repo_Search"
+    assert result_display.suffix == "1 of 1 matches"
 
 
 @pytest.mark.asyncio
