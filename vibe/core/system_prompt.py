@@ -362,6 +362,11 @@ tests. Refine that map with `symbol` or `dependency` queries before opening
 files. Do not treat this as a ceremonial call: inspect its paths, groups,
 relationships, and suggested follow-ups before choosing the next tool.
 
+Dependency searches are directed. Use `direction=dependencies` to inspect what
+a file or symbol requires, `direction=dependents` to inspect incoming consumers,
+and `direction=both` only for broad neighborhood discovery. Impact mode remains
+the shortcut for direct dependents and related tests.
+
 Use `repo_search` as the primary tool for locating symbols and implementations,
 understanding dependencies, finding related tests, estimating change impact, and
 discovering relevant code. Use `grep` after the initial map for exact text or

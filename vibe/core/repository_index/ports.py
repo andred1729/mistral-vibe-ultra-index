@@ -5,6 +5,7 @@ from typing import Protocol
 
 from vibe.core.repository_index.models import (
     IndexGeneration,
+    RepositoryDependencyDirection,
     RepositoryIndexState,
     RepositoryMap,
     RepositorySearchMode,
@@ -23,6 +24,9 @@ class RepositoryIndexReader(Protocol):
         query: str,
         *,
         mode: RepositorySearchMode = RepositorySearchMode.AUTO,
+        direction: RepositoryDependencyDirection = (
+            RepositoryDependencyDirection.DEPENDENCIES
+        ),
         path: str | None = None,
         max_results: int = 20,
     ) -> RepositorySearchResult: ...

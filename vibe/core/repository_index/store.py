@@ -19,6 +19,7 @@ from vibe.core.repository_index.models import (
     IndexChunk,
     IndexGeneration,
     IndexStatus,
+    RepositoryDependencyDirection,
     RepositoryDependencyTree,
     RepositoryMap,
     RepositoryMapEntry,
@@ -670,6 +671,9 @@ class RepositoryIndexStore:
         query: str,
         *,
         mode: RepositorySearchMode = RepositorySearchMode.AUTO,
+        direction: RepositoryDependencyDirection = (
+            RepositoryDependencyDirection.DEPENDENCIES
+        ),
         path: str | None = None,
         max_results: int,
     ) -> RepositorySearchResult:
@@ -711,11 +715,10 @@ class RepositoryIndexStore:
                         """,
                         (match_query, generation.id, _MAX_SEARCH_RESULTS),
                     ).fetchall()
-                structural_seed_paths = {str(row[0]) for row in structural_rows}
-                seed_paths = (
-                    structural_seed_paths
-                    if mode is RepositorySearchMode.DEPENDENCY and structural_seed_paths
-                    else {str(row[0]) for row in (*lexical_rows, *structural_rows)}
+                seed_paths = _search_seed_paths(
+                    mode=mode,
+                    lexical_rows=lexical_rows,
+                    structural_rows=structural_rows,
                 )
                 seed_paths.update(
                     str(row[0])
@@ -730,6 +733,11 @@ class RepositoryIndexStore:
                         connection,
                         generation.id,
                         seed_paths,
+                        direction=(
+                            RepositoryDependencyDirection.BOTH
+                            if mode is RepositorySearchMode.AUTO
+                            else direction
+                        ),
                         max_hops=2,
                         max_results=_MAX_SEARCH_RESULTS,
                     )
@@ -749,8 +757,14 @@ class RepositoryIndexStore:
                     connection,
                     generation.id,
                     mode=mode,
+                    direction=(
+                        RepositoryDependencyDirection.BOTH
+                        if mode is RepositorySearchMode.AUTO
+                        else direction
+                    ),
                     path_prefix=path_prefix,
                     importance=importance,
+                    seed_paths=seed_paths,
                     rows=(*structural_rows, *lexical_rows, *dependency_rows),
                 )
         except sqlite3.DatabaseError as exc:
@@ -796,13 +810,19 @@ class RepositoryIndexStore:
                 snippet=str(row[3]),
                 relationship=str(row[4]),
                 score_reason=str(row[5]),
+                dependency_direction=RepositoryDependencyDirection(str(row[6])),
                 generation=generation.id,
             )
             for row in dependency_rows
         )
         candidates = tuple(
             match
-            for match in (*structural_matches, *lexical_matches, *dependency_matches)
+            for match in _search_candidates(
+                mode=mode,
+                structural_matches=structural_matches,
+                lexical_matches=lexical_matches,
+                dependency_matches=dependency_matches,
+            )
             if _matches_path_filter(match.path, path_prefix)
         )
         matches, groups = group_repository_matches(
@@ -819,6 +839,13 @@ class RepositoryIndexStore:
             generation=generation,
             query=query,
             mode=mode,
+            dependency_direction=(
+                RepositoryDependencyDirection.BOTH
+                if mode is RepositorySearchMode.AUTO
+                else direction
+                if mode is RepositorySearchMode.DEPENDENCY
+                else None
+            ),
             total_matches=len({
                 (match.path, match.line_start, match.relationship)
                 for match in candidates
@@ -975,6 +1002,35 @@ def _matches_path_filter(path: str, prefix: str | None) -> bool:
     return prefix is None or path == prefix or path.startswith(f"{prefix}/")
 
 
+def _search_seed_paths(
+    *,
+    mode: RepositorySearchMode,
+    lexical_rows: Sequence[tuple[Any, ...]],
+    structural_rows: Sequence[tuple[Any, ...]],
+) -> set[str]:
+    if mode is RepositorySearchMode.DEPENDENCY and structural_rows:
+        definitions = {
+            str(row[0]) for row in structural_rows if str(row[4]) == "defines"
+        }
+        return definitions or {str(row[0]) for row in structural_rows}
+    return {str(row[0]) for row in (*lexical_rows, *structural_rows)}
+
+
+def _search_candidates(
+    *,
+    mode: RepositorySearchMode,
+    structural_matches: Sequence[RepositorySearchMatch],
+    lexical_matches: Sequence[RepositorySearchMatch],
+    dependency_matches: Sequence[RepositorySearchMatch],
+) -> tuple[RepositorySearchMatch, ...]:
+    if mode is RepositorySearchMode.DEPENDENCY:
+        definitions = tuple(
+            match for match in structural_matches if match.relationship == "defines"
+        )
+        return (*definitions, *dependency_matches)
+    return (*structural_matches, *lexical_matches, *dependency_matches)
+
+
 def _incoming_components(
     connection: sqlite3.Connection, generation_id: int, paths: set[str]
 ) -> dict[str, frozenset[str]]:
@@ -997,8 +1053,10 @@ def _search_context(
     generation_id: int,
     *,
     mode: RepositorySearchMode,
+    direction: RepositoryDependencyDirection,
     path_prefix: str | None,
     importance: dict[str, float],
+    seed_paths: set[str],
     rows: Sequence[tuple[Any, ...]],
 ) -> _SearchContext:
     paths = {str(row[0]) for row in rows}
@@ -1012,49 +1070,119 @@ def _search_context(
             if _matches_path_filter(str(row[0]), path_prefix)
         )
     )
+    root_candidates = (
+        tuple(sorted(seed_paths))
+        if mode is RepositorySearchMode.DEPENDENCY
+        else candidates
+    )
     roots = tuple(
-        sorted(candidates, key=lambda path: _tree_root_key(path, importance))
+        sorted(root_candidates, key=lambda path: _tree_root_key(path, importance))
     )[:_MAX_DEPENDENCY_TREE_ROOTS]
     return _SearchContext(
         incoming_components=incoming,
-        dependency_trees=_dependency_trees(connection, generation_id, roots),
+        dependency_trees=_dependency_trees(
+            connection, generation_id, roots, direction=direction
+        ),
     )
 
 
 def _dependency_trees(
-    connection: sqlite3.Connection, generation_id: int, roots: Sequence[str]
+    connection: sqlite3.Connection,
+    generation_id: int,
+    roots: Sequence[str],
+    *,
+    direction: RepositoryDependencyDirection,
 ) -> tuple[RepositoryDependencyTree, ...]:
-    adjacency: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    adjacency: dict[str, list[tuple[str, str, RepositoryDependencyDirection]]] = (
+        defaultdict(list)
+    )
     frontier = set(roots)
     for _ in range(_MAX_DEPENDENCY_TREE_DEPTH):
         if not frontier:
             break
-        placeholders = ",".join("?" for _ in frontier)
+        next_frontier: set[str] = set()
+        for current, neighbor, kind, edge_direction in _tree_edges(
+            connection, generation_id, frontier, direction=direction
+        ):
+            if current == neighbor:
+                continue
+            edge = (neighbor, kind, edge_direction)
+            if edge not in adjacency[current]:
+                adjacency[current].append(edge)
+            next_frontier.add(neighbor)
+        frontier = next_frontier
+    return tuple(
+        _render_dependency_tree(root, adjacency, direction=direction) for root in roots
+    )
+
+
+def _tree_edges(
+    connection: sqlite3.Connection,
+    generation_id: int,
+    frontier: set[str],
+    *,
+    direction: RepositoryDependencyDirection,
+) -> tuple[tuple[str, str, str, RepositoryDependencyDirection], ...]:
+    paths = sorted(frontier)
+    placeholders = ",".join("?" for _ in paths)
+    edges: set[tuple[str, str, str, RepositoryDependencyDirection]] = set()
+    if direction in {
+        RepositoryDependencyDirection.DEPENDENCIES,
+        RepositoryDependencyDirection.BOTH,
+    }:
         rows = connection.execute(
             "SELECT source, target, kind FROM graph_edges "
             "WHERE generation_id = ? AND target IS NOT NULL "
             "AND kind IN ('imports', 'inherits') "
             f"AND source IN ({placeholders}) ORDER BY source, target, kind",
-            (generation_id, *sorted(frontier)),
+            (generation_id, *paths),
         ).fetchall()
-        next_frontier: set[str] = set()
-        for source_value, target_value, kind_value in rows:
-            source = str(source_value)
-            target = _graph_target_path(str(target_value))
-            if source == target:
-                continue
-            edge = (target, str(kind_value))
-            if edge not in adjacency[source]:
-                adjacency[source].append(edge)
-            next_frontier.add(target)
-        frontier = next_frontier
-    return tuple(_render_dependency_tree(root, adjacency) for root in roots)
+        edges.update(
+            (
+                str(source),
+                _graph_target_path(str(target)),
+                str(kind),
+                RepositoryDependencyDirection.DEPENDENCIES,
+            )
+            for source, target, kind in rows
+        )
+    if direction in {
+        RepositoryDependencyDirection.DEPENDENTS,
+        RepositoryDependencyDirection.BOTH,
+    }:
+        symbol_conditions = " OR ".join("target LIKE ? ESCAPE '\\'" for _ in paths)
+        rows = connection.execute(
+            "SELECT source, target, kind FROM graph_edges "
+            "WHERE generation_id = ? AND target IS NOT NULL "
+            "AND kind IN ('imports', 'inherits') AND "
+            f"(target IN ({placeholders}) OR {symbol_conditions}) "
+            "ORDER BY source, target, kind",
+            (
+                generation_id,
+                *paths,
+                *(f"symbol:{_escape_like(path)}#%" for path in paths),
+            ),
+        ).fetchall()
+        edges.update(
+            (
+                _graph_target_path(str(target)),
+                str(source),
+                str(kind),
+                RepositoryDependencyDirection.DEPENDENTS,
+            )
+            for source, target, kind in rows
+        )
+    return tuple(sorted(edges))
 
 
 def _graph_target_path(target: str) -> str:
     if target.startswith("symbol:"):
         return target.removeprefix("symbol:").partition("#")[0]
     return target
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _tree_root_key(path: str, importance: dict[str, float]) -> tuple[bool, float, str]:
@@ -1064,7 +1192,10 @@ def _tree_root_key(path: str, importance: dict[str, float]) -> tuple[bool, float
 
 
 def _render_dependency_tree(
-    root: str, adjacency: dict[str, list[tuple[str, str]]]
+    root: str,
+    adjacency: dict[str, list[tuple[str, str, RepositoryDependencyDirection]]],
+    *,
+    direction: RepositoryDependencyDirection,
 ) -> RepositoryDependencyTree:
     lines = [root]
     visited = {root}
@@ -1074,7 +1205,7 @@ def _render_dependency_tree(
     def append_children(path: str, depth: int, prefix: str) -> None:
         nonlocal node_count, truncated
         children = adjacency.get(path, ())
-        for position, (child, kind) in enumerate(children):
+        for position, (child, kind, edge_direction) in enumerate(children):
             if node_count >= _MAX_DEPENDENCY_TREE_NODES:
                 lines.append(f"{prefix}└── … truncated")
                 truncated = True
@@ -1083,7 +1214,12 @@ def _render_dependency_tree(
             connector = "└──" if last else "├──"
             cycle = child in visited
             suffix = " [cycle]" if cycle else ""
-            lines.append(f"{prefix}{connector} [{kind}] {child}{suffix}")
+            edge = (
+                f"{kind} →"
+                if edge_direction is RepositoryDependencyDirection.DEPENDENCIES
+                else f"← {kind}"
+            )
+            lines.append(f"{prefix}{connector} [{edge}] {child}{suffix}")
             node_count += 1
             if cycle or depth == _MAX_DEPENDENCY_TREE_DEPTH:
                 continue
@@ -1095,7 +1231,11 @@ def _render_dependency_tree(
 
     append_children(root, 1, "")
     return RepositoryDependencyTree(
-        root=root, lines=tuple(lines), node_count=node_count, truncated=truncated
+        root=root,
+        direction=direction,
+        lines=tuple(lines),
+        node_count=node_count,
+        truncated=truncated,
     )
 
 
@@ -1113,6 +1253,7 @@ def _dependency_rows(  # noqa: PLR0914
     generation_id: int,
     seed_paths: set[str],
     *,
+    direction: RepositoryDependencyDirection,
     max_hops: int,
     max_results: int,
 ) -> list[tuple[Any, ...]]:
@@ -1126,10 +1267,13 @@ def _dependency_rows(  # noqa: PLR0914
     if not seeds:
         return []
 
-    adjacency: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    adjacency: dict[str, set[tuple[str, str, RepositoryDependencyDirection]]] = (
+        defaultdict(set)
+    )
     rows = connection.execute(
         "SELECT source, target, kind FROM graph_edges "
-        "WHERE generation_id = ? AND target IS NOT NULL",
+        "WHERE generation_id = ? AND target IS NOT NULL "
+        "AND kind IN ('imports', 'references', 'calls', 'inherits')",
         (generation_id,),
     ).fetchall()
     for source_value, target_value, kind_value in rows:
@@ -1140,27 +1284,43 @@ def _dependency_rows(  # noqa: PLR0914
         if source not in file_paths or target not in file_paths or source == target:
             continue
         kind = str(kind_value)
-        adjacency[source].add((target, kind))
-        adjacency[target].add((source, kind))
+        if direction in {
+            RepositoryDependencyDirection.DEPENDENCIES,
+            RepositoryDependencyDirection.BOTH,
+        }:
+            adjacency[source].add((
+                target,
+                kind,
+                RepositoryDependencyDirection.DEPENDENCIES,
+            ))
+        if direction in {
+            RepositoryDependencyDirection.DEPENDENTS,
+            RepositoryDependencyDirection.BOTH,
+        }:
+            adjacency[target].add((
+                source,
+                kind,
+                RepositoryDependencyDirection.DEPENDENTS,
+            ))
 
     queue = deque((seed, 0) for seed in sorted(seeds))
     visited = set(seeds)
-    neighbors: list[tuple[str, int, str]] = []
+    neighbors: list[tuple[str, int, str, RepositoryDependencyDirection]] = []
     while queue and len(neighbors) < max_results:
         current, depth = queue.popleft()
         if depth == max_hops:
             continue
-        for neighbor, kind in sorted(adjacency.get(current, ())):
+        for neighbor, kind, edge_direction in sorted(adjacency.get(current, ())):
             if neighbor in visited:
                 continue
             visited.add(neighbor)
             distance = depth + 1
-            neighbors.append((neighbor, distance, kind))
+            neighbors.append((neighbor, distance, kind, edge_direction))
             queue.append((neighbor, distance))
             if len(neighbors) == max_results:
                 break
 
-    paths = [path for path, _, _ in neighbors]
+    paths = [path for path, _, _, _ in neighbors]
     chunks_by_path: dict[str, tuple[Any, ...]] = {}
     if paths:
         placeholders = ",".join("?" for _ in paths)
@@ -1174,15 +1334,19 @@ def _dependency_rows(  # noqa: PLR0914
             chunks_by_path.setdefault(str(row[0]), tuple(row[1:]))
 
     result: list[tuple[Any, ...]] = []
-    for path, distance, kind in neighbors:
+    for path, distance, kind, edge_direction in neighbors:
         line_start, line_end, content = chunks_by_path.get(path, (1, 1, path))
         result.append((
             path,
             line_start,
             line_end,
             content,
-            f"dependency_distance_{distance}_via_{kind}",
-            f"dependency graph proximity ({distance} hop{'s' if distance > 1 else ''})",
+            f"dependency_distance_{distance}_{edge_direction.value}_via_{kind}",
+            (
+                f"{edge_direction.value} via {kind} "
+                f"({distance} hop{'s' if distance > 1 else ''})"
+            ),
+            edge_direction.value,
         ))
     return result
 

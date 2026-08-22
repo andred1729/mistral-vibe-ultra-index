@@ -85,6 +85,12 @@ class RepositorySearchMode(StrEnum):
     IMPACT = auto()
 
 
+class RepositoryDependencyDirection(StrEnum):
+    DEPENDENCIES = auto()
+    DEPENDENTS = auto()
+    BOTH = auto()
+
+
 class RepositoryModuleRole(StrEnum):
     FEATURE = auto()
     SHARED = auto()
@@ -199,6 +205,7 @@ class RepositorySearchMatch(BaseModel):
     symbol: str | None = None
     snippet: str
     relationship: str = "text_match"
+    dependency_direction: RepositoryDependencyDirection | None = None
     score_reason: str
     generation: int
     component: str = "(root)"
@@ -227,7 +234,9 @@ class RepositoryDependencyTree(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     root: str
-    direction: str = "outgoing"
+    direction: RepositoryDependencyDirection = (
+        RepositoryDependencyDirection.DEPENDENCIES
+    )
     lines: tuple[str, ...]
     node_count: int
     truncated: bool = False
@@ -239,6 +248,7 @@ class RepositorySearchResult(BaseModel):
     generation: IndexGeneration
     query: str
     mode: RepositorySearchMode = RepositorySearchMode.AUTO
+    dependency_direction: RepositoryDependencyDirection | None = None
     total_matches: int
     matches: tuple[RepositorySearchMatch, ...]
     groups: tuple[RepositorySearchGroup, ...] = ()

@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 from pydantic import BaseModel, Field
 
 from vibe.core.repository_index.models import (
+    RepositoryDependencyDirection,
     RepositorySearchMode,
     RepositorySearchResult,
 )
@@ -31,6 +32,13 @@ class RepoSearchArgs(BaseModel):
             "auto for general retrieval, text for lexical evidence, symbol for "
             "definitions/references, dependency for graph neighbors, or impact "
             "for dependents and related tests."
+        ),
+    )
+    direction: RepositoryDependencyDirection = Field(
+        default=RepositoryDependencyDirection.DEPENDENCIES,
+        description=(
+            "Graph direction for dependency mode: dependencies for outgoing "
+            "requirements, dependents for incoming consumers, or both."
         ),
     )
     path: str | None = Field(
@@ -77,6 +85,10 @@ class RepoSearch(
         if self.repository_index is None:
             raise ToolError("The repository index is unavailable for this session.")
         result = await self.repository_index.search(
-            args.query, mode=args.mode, path=args.path, max_results=args.limit
+            args.query,
+            mode=args.mode,
+            direction=args.direction,
+            path=args.path,
+            max_results=args.limit,
         )
         yield result

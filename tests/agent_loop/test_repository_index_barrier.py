@@ -16,6 +16,7 @@ from vibe.core.repository_index import RepositoryIndexService
 from vibe.core.repository_index.models import (
     IndexGeneration,
     IndexStatus,
+    RepositoryDependencyDirection,
     RepositoryIndexState,
     RepositorySearchMode,
     RepositorySearchResult,
@@ -65,6 +66,9 @@ class _RecordingIndexReader:
         query: str,
         *,
         mode: RepositorySearchMode = RepositorySearchMode.AUTO,
+        direction: RepositoryDependencyDirection = (
+            RepositoryDependencyDirection.DEPENDENCIES
+        ),
         path: str | None = None,
         max_results: int = 20,
     ) -> RepositorySearchResult:

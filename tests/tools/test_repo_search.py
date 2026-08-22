@@ -7,6 +7,7 @@ import pytest
 
 from tests.conftest import build_test_agent_loop
 from vibe.core.repository_index import (
+    RepositoryDependencyDirection,
     RepositoryIndexService,
     RepositoryModuleRole,
     RepositorySearchMode,
@@ -124,7 +125,8 @@ async def test_dependency_mode_expands_two_hops_and_path_filters_results(
         "def shared_api():\n    return 1\n", encoding="utf-8"
     )
     (root / "pkg" / "middle.py").write_text(
-        "from pkg.base import shared_api\n", encoding="utf-8"
+        "from pkg.base import shared_api\nMIDDLE_LAYER_MARKER = True\n",
+        encoding="utf-8",
     )
     (root / "apps" / "entry.py").write_text(
         "from pkg.middle import shared_api\n", encoding="utf-8"
@@ -132,20 +134,65 @@ async def test_dependency_mode_expands_two_hops_and_path_filters_results(
     service = RepositoryIndexService(root, tmp_path / "indexes")
 
     result = await service.search(
-        "shared_api", mode=RepositorySearchMode.DEPENDENCY, path="apps", max_results=20
+        "shared_api",
+        mode=RepositorySearchMode.DEPENDENCY,
+        direction=RepositoryDependencyDirection.DEPENDENTS,
+        path="apps",
+        max_results=20,
     )
 
     assert {match.path for match in result.matches} == {"apps/entry.py"}
-    assert any(
-        match.relationship.startswith("dependency_distance_")
+    assert result.dependency_direction is RepositoryDependencyDirection.DEPENDENTS
+    assert all(
+        match.dependency_direction is RepositoryDependencyDirection.DEPENDENTS
         for match in result.matches
     )
-    assert result.dependency_trees[0].root == "apps/entry.py"
+    assert result.dependency_trees[0].root == "pkg/base.py"
+    assert (
+        result.dependency_trees[0].direction is RepositoryDependencyDirection.DEPENDENTS
+    )
     rendered_tree = "\n".join(result.dependency_trees[0].lines)
-    assert "[imports] pkg/middle.py" in rendered_tree
-    assert "[imports] pkg/base.py" in rendered_tree
+    assert "[← imports] pkg/middle.py" in rendered_tree
+    assert "[← imports] apps/entry.py" in rendered_tree
     assert result.dependency_trees[0].node_count == 3
     assert not result.dependency_trees[0].truncated
+
+    dependencies = await service.search(
+        "MIDDLE_LAYER_MARKER", mode=RepositorySearchMode.DEPENDENCY, max_results=20
+    )
+    outgoing = [
+        match
+        for match in dependencies.matches
+        if match.dependency_direction is not None
+    ]
+    assert {match.path for match in outgoing} == {"pkg/base.py"}
+    assert all(
+        match.dependency_direction is RepositoryDependencyDirection.DEPENDENCIES
+        for match in outgoing
+    )
+    assert (
+        dependencies.dependency_direction is RepositoryDependencyDirection.DEPENDENCIES
+    )
+    assert "[imports →] pkg/base.py" in "\n".join(
+        dependencies.dependency_trees[0].lines
+    )
+
+    neighborhood = await service.search(
+        "MIDDLE_LAYER_MARKER",
+        mode=RepositorySearchMode.DEPENDENCY,
+        direction=RepositoryDependencyDirection.BOTH,
+        max_results=20,
+    )
+    graph_matches = [
+        match
+        for match in neighborhood.matches
+        if match.dependency_direction is not None
+    ]
+    assert {match.path for match in graph_matches} == {"apps/entry.py", "pkg/base.py"}
+    assert {match.dependency_direction for match in graph_matches} == {
+        RepositoryDependencyDirection.DEPENDENCIES,
+        RepositoryDependencyDirection.DEPENDENTS,
+    }
 
 
 @pytest.mark.asyncio

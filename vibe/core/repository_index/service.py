@@ -26,6 +26,7 @@ from vibe.core.repository_index.models import (
     IndexGeneration,
     IndexPhase,
     IndexStatus,
+    RepositoryDependencyDirection,
     RepositoryIndexState,
     RepositoryMap,
     RepositorySearchMode,
@@ -354,6 +355,9 @@ class RepositoryIndexService:
         query: str,
         *,
         mode: RepositorySearchMode = RepositorySearchMode.AUTO,
+        direction: RepositoryDependencyDirection = (
+            RepositoryDependencyDirection.DEPENDENCIES
+        ),
         path: str | None = None,
         max_results: int = 20,
     ) -> RepositorySearchResult:
@@ -361,10 +365,20 @@ class RepositoryIndexService:
         if generation is None:
             async with self.inference_scope() as pinned:
                 return await self._search_generation(
-                    pinned, query, mode=mode, path=path, max_results=max_results
+                    pinned,
+                    query,
+                    mode=mode,
+                    direction=direction,
+                    path=path,
+                    max_results=max_results,
                 )
         return await self._search_generation(
-            generation, query, mode=mode, path=path, max_results=max_results
+            generation,
+            query,
+            mode=mode,
+            direction=direction,
+            path=path,
+            max_results=max_results,
         )
 
     async def compact_map(self, *, max_files: int = 50) -> RepositoryMap:
@@ -436,6 +450,7 @@ class RepositoryIndexService:
         query: str,
         *,
         mode: RepositorySearchMode,
+        direction: RepositoryDependencyDirection,
         path: str | None,
         max_results: int,
     ) -> RepositorySearchResult:
@@ -449,6 +464,7 @@ class RepositoryIndexService:
                 generation,
                 query,
                 mode=mode,
+                direction=direction,
                 path=path,
                 max_results=max_results,
             )
