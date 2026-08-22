@@ -6,8 +6,13 @@ import pytest
 
 from vibe.core.repository_index.models import (
     DiscoveredFile,
+    FileGraphScore,
+    GraphEdge,
+    GraphEdgeKind,
+    HydratedGraph,
     IndexChunk,
     IndexStatus,
+    RepositoryDependencyDirection,
     RepositorySearchMode,
 )
 from vibe.core.repository_index.store import (
@@ -202,7 +207,12 @@ def test_auto_search_expands_identifier_concepts_and_prioritizes_coverage(
     store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
     generation = store.publish(
         root,
-        [_file("api.py"), _file("compiler.py"), _file("tests/test_feature.py")],
+        [
+            _file("api.py"),
+            _file("compiler.py"),
+            _file("docs/feature.md"),
+            _file("tests/test_feature.py"),
+        ],
         [
             IndexChunk(
                 path="api.py",
@@ -217,6 +227,13 @@ def test_auto_search_expands_identifier_concepts_and_prioritizes_coverage(
                 line_start=1,
                 line_end=1,
                 content="filtered relation select related compiler hydration",
+            ),
+            IndexChunk(
+                path="docs/feature.md",
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="filtered relation select related",
             ),
             IndexChunk(
                 path="tests/test_feature.py",
@@ -236,7 +253,132 @@ def test_auto_search_expands_identifier_concepts_and_prioritizes_coverage(
     )
 
     assert result.matches[0].path == "compiler.py"
-    assert sum(match.path == "tests/test_feature.py" for match in result.matches) <= 3
+    assert len(result.matches) <= 8
+    assert len({match.path for match in result.matches}) == len(result.matches)
+    assert result.dependency_trees == ()
+
+
+def test_auto_search_ranks_source_from_beyond_initial_fts_window(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    documentation = [f"docs/noise_{index:03}.md" for index in range(120)]
+    source = "z_implementation.py"
+    generation = store.publish(
+        root,
+        [_file(path, path) for path in (*documentation, source)],
+        [
+            *(
+                IndexChunk(
+                    path=path,
+                    ordinal=0,
+                    line_start=1,
+                    line_end=1,
+                    content="migration index",
+                )
+                for path in documentation
+            ),
+            IndexChunk(
+                path=source,
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="migration implementation",
+            ),
+        ],
+    )
+
+    result = store.search(generation, "migration index", max_results=10)
+
+    assert result.matches[0].path == source
+
+
+def test_auto_search_expands_behavior_into_implementation_intent(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    generation = store.publish(
+        root,
+        [_file("state.py"), _file("optimizer.py")],
+        [
+            IndexChunk(
+                path="state.py",
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="migration squashing deprecation warning",
+            ),
+            IndexChunk(
+                path="optimizer.py",
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="migration optimizer reduce operations",
+            ),
+        ],
+    )
+
+    result = store.search(generation, "migration squashing", max_results=10)
+
+    assert result.matches[0].path == "optimizer.py"
+
+
+def test_auto_search_surfaces_tests_related_to_matching_source(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    source = "pkg/optimizer.py"
+    test = "tests/test_related.py"
+    generation = store.publish(
+        root,
+        [_file(source), _file(test)],
+        [
+            IndexChunk(
+                path=source,
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="migration optimizer reduce",
+            ),
+            IndexChunk(
+                path=test,
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="unrelated test fixture",
+            ),
+        ],
+        graph=HydratedGraph(
+            edges=(
+                GraphEdge(source=source, target=test, kind=GraphEdgeKind.TESTED_BY),
+            ),
+            scores=(
+                FileGraphScore(path=source, importance=0.5, component=0),
+                FileGraphScore(path=test, importance=0.5, component=0),
+            ),
+            topology_fingerprint="topology",
+        ),
+    )
+
+    result = store.search(
+        generation,
+        "migration optimizer",
+        mode=RepositorySearchMode.AUTO,
+        direction=RepositoryDependencyDirection.DEPENDENCIES,
+        max_results=10,
+    )
+
+    related_test = next(
+        match
+        for match in result.matches
+        if match.path == test and match.relationship == "tested_by"
+    )
+    assert related_test.relationship == "tested_by"
+    assert related_test.dependency_direction is RepositoryDependencyDirection.DEPENDENTS
 
 
 def test_search_rejects_absolute_or_parent_path_filters(tmp_path: Path) -> None:

@@ -18,6 +18,11 @@ _MAX_SNIPPET_BYTES = 3_000
 _SHARED_COMPONENT_THRESHOLD = 2
 _MAX_QUERY_SUGGESTIONS = 3
 _MAX_MATCHES_PER_PATH = 3
+_QUERY_CONCEPT_EXPANSIONS: dict[str, tuple[str, ...]] = {
+    "squash": ("optimizer", "reduce"),
+    "squashed": ("optimizer", "reduce"),
+    "squashing": ("optimizer", "reduce"),
+}
 
 
 def rank_repository_matches(
@@ -26,9 +31,12 @@ def rank_repository_matches(
     query: str,
     importance: Mapping[str, float],
     max_results: int,
+    max_matches_per_path: int = _MAX_MATCHES_PER_PATH,
+    max_snippet_bytes: int = _MAX_SNIPPET_BYTES,
 ) -> tuple[RepositorySearchMatch, ...]:
     query_folded = query.casefold()
     query_concepts = repository_query_concepts(query)
+    expanded_concepts = _expanded_query_concepts(query)
     unique: dict[tuple[str, int, str], RepositorySearchMatch] = {}
     for match in matches:
         unique.setdefault((match.path, match.line_start, match.relationship), match)
@@ -36,7 +44,7 @@ def rank_repository_matches(
     ordered = sorted(
         unique.values(),
         key=lambda match: (
-            -_query_concept_coverage(match, query_concepts),
+            -_query_relevance_score(match, query_concepts, expanded_concepts),
             _result_path_rank(match.path),
             -_relationship_score(match.relationship),
             -int(query_folded in match.path.casefold()),
@@ -49,9 +57,9 @@ def rank_repository_matches(
     path_counts: dict[str, int] = defaultdict(int)
     used_bytes = 0
     for match in ordered:
-        if path_counts[match.path] >= _MAX_MATCHES_PER_PATH:
+        if path_counts[match.path] >= max_matches_per_path:
             continue
-        snippet = _truncate_utf8(match.snippet, _MAX_SNIPPET_BYTES)
+        snippet = _truncate_utf8(match.snippet, max_snippet_bytes)
         reason = match.score_reason
         file_importance = importance.get(match.path)
         if file_importance is not None:
@@ -91,10 +99,8 @@ def group_repository_matches(
     for match in matches:
         grouped.setdefault(match.component, []).append(match)
 
-    reordered: list[RepositorySearchMatch] = []
     summaries: list[RepositorySearchGroup] = []
     for component, component_matches in grouped.items():
-        reordered.extend(component_matches)
         summaries.append(
             RepositorySearchGroup(
                 component=component,
@@ -105,7 +111,7 @@ def group_repository_matches(
                 paths=tuple(dict.fromkeys(match.path for match in component_matches)),
             )
         )
-    return tuple(reordered), tuple(summaries)
+    return tuple(matches), tuple(summaries)
 
 
 def repository_component(path: str) -> str:
@@ -114,6 +120,12 @@ def repository_component(path: str) -> str:
 
 
 def repository_query_concepts(query: str) -> tuple[str, ...]:
+    concepts = list(_literal_query_concepts(query))
+    concepts.extend(_expanded_query_concepts(query))
+    return tuple(dict.fromkeys(concepts))
+
+
+def _literal_query_concepts(query: str) -> tuple[str, ...]:
     concepts: list[str] = []
     for token in re.findall(r"[^\W]+", query, flags=re.UNICODE):
         parts = re.findall(
@@ -121,6 +133,16 @@ def repository_query_concepts(query: str) -> tuple[str, ...]:
         )
         concepts.extend(part.casefold() for part in parts or (token,))
     return tuple(dict.fromkeys(concepts))
+
+
+def _expanded_query_concepts(query: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            expansion
+            for concept in _literal_query_concepts(query)
+            for expansion in _QUERY_CONCEPT_EXPANSIONS.get(concept, ())
+        )
+    )
 
 
 def suggest_repository_queries(
@@ -261,6 +283,29 @@ def _query_concept_coverage(
         value for value in (match.path, match.symbol, match.snippet) if value
     ).casefold()
     return sum(concept in evidence for concept in concepts)
+
+
+def _query_relevance_score(
+    match: RepositorySearchMatch,
+    concepts: Sequence[str],
+    expanded_concepts: Sequence[str],
+) -> int:
+    relationship_bonus = 12 if match.relationship == "tested_by" else 0
+    return (
+        _query_concept_coverage(match, concepts) * 3
+        + _query_concept_coverage(match, expanded_concepts) * 5
+        + relationship_bonus
+        - _path_relevance_penalty(match.path)
+    )
+
+
+def _path_relevance_penalty(path: str) -> int:
+    parts = PurePosixPath(path).parts
+    if any(part in {"docs", "doc"} for part in parts):
+        return 30
+    if any(part == "tests" or part.startswith("test_") for part in parts):
+        return 4
+    return 0
 
 
 def _truncate_utf8(value: str, max_bytes: int) -> str:

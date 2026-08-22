@@ -184,7 +184,7 @@ async def test_dependency_mode_expands_two_hops_and_path_filters_results(
     )
 
     automatic = await service.search("MIDDLE_LAYER_MARKER", max_results=20)
-    assert automatic.dependency_trees[0].root == "pkg/middle.py"
+    assert automatic.dependency_trees == ()
 
     neighborhood = await service.search(
         "MIDDLE_LAYER_MARKER",

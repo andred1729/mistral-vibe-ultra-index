@@ -41,6 +41,10 @@ _GRAPH_SCHEMA_VERSION = 3
 _STRUCTURED_SEARCH_SCHEMA_VERSION = 4
 _CONTENT_FACT_SCHEMA_VERSION = 5
 _MAX_SEARCH_RESULTS = 100
+_MAX_SEARCH_CANDIDATES = 500
+_MAX_AUTO_RESULTS = 8
+_MAX_AUTO_MATCHES_PER_PATH = 1
+_MAX_AUTO_SNIPPET_BYTES = 800
 _MAX_IMPACT_DEFINITIONS = 5
 _MAX_MAP_FILES = 200
 _MAX_MAP_SYMBOLS_PER_FILE = 20
@@ -699,10 +703,10 @@ class RepositoryIndexStore:
                         ORDER BY bm25(chunks_fts), path, line_start
                         LIMIT ?
                         """,
-                        (match_query, generation.id, _MAX_SEARCH_RESULTS),
+                        (match_query, generation.id, _MAX_SEARCH_CANDIDATES),
                     ).fetchall()
                 structural_rows = _structural_rows(
-                    connection, generation.id, query, mode, _MAX_SEARCH_RESULTS
+                    connection, generation.id, query, mode, _MAX_SEARCH_CANDIDATES
                 )
                 if mode is RepositorySearchMode.SYMBOL and not structural_rows:
                     lexical_rows = connection.execute(
@@ -714,7 +718,7 @@ class RepositoryIndexStore:
                         ORDER BY bm25(chunks_fts), path, line_start
                         LIMIT ?
                         """,
-                        (match_query, generation.id, _MAX_SEARCH_RESULTS),
+                        (match_query, generation.id, _MAX_SEARCH_CANDIDATES),
                     ).fetchall()
                 seed_paths = _search_seed_paths(
                     mode=mode,
@@ -763,11 +767,8 @@ class RepositoryIndexStore:
                         if mode is RepositorySearchMode.AUTO
                         else direction
                     ),
-                    query=query,
-                    path_prefix=path_prefix,
                     importance=importance,
                     seed_paths=seed_paths,
-                    root_rows=(*lexical_rows, *structural_rows),
                     rows=(*lexical_rows, *structural_rows, *dependency_rows),
                 )
         except sqlite3.DatabaseError as exc:
@@ -835,7 +836,21 @@ class RepositoryIndexStore:
                 ),
                 query=query,
                 importance=importance,
-                max_results=max_results,
+                max_results=(
+                    min(max_results, _MAX_AUTO_RESULTS)
+                    if mode is RepositorySearchMode.AUTO
+                    else max_results
+                ),
+                max_matches_per_path=(
+                    _MAX_AUTO_MATCHES_PER_PATH
+                    if mode is RepositorySearchMode.AUTO
+                    else 3
+                ),
+                max_snippet_bytes=(
+                    _MAX_AUTO_SNIPPET_BYTES
+                    if mode is RepositorySearchMode.AUTO
+                    else 3_000
+                ),
             )
         )
         return RepositorySearchResult(
@@ -858,7 +873,11 @@ class RepositoryIndexStore:
             suggestions=suggest_repository_queries(
                 query=query, mode=mode, matches=matches, groups=groups
             ),
-            dependency_trees=search_context.dependency_trees,
+            dependency_trees=(
+                ()
+                if mode is RepositorySearchMode.AUTO
+                else search_context.dependency_trees
+            ),
             structural_coverage=generation.structural_file_count > 0,
         )
 
@@ -1032,6 +1051,11 @@ def _search_candidates(
             match for match in structural_matches if match.relationship == "defines"
         )
         return (*definitions, *dependency_matches)
+    if mode is RepositorySearchMode.AUTO:
+        related_tests = tuple(
+            match for match in dependency_matches if match.relationship == "tested_by"
+        )
+        return (*structural_matches, *lexical_matches, *related_tests)
     return (*structural_matches, *lexical_matches, *dependency_matches)
 
 
@@ -1058,25 +1082,17 @@ def _search_context(
     *,
     mode: RepositorySearchMode,
     direction: RepositoryDependencyDirection,
-    query: str,
-    path_prefix: str | None,
     importance: dict[str, float],
     seed_paths: set[str],
-    root_rows: Sequence[tuple[Any, ...]],
     rows: Sequence[tuple[Any, ...]],
 ) -> _SearchContext:
     paths = {str(row[0]) for row in rows}
     incoming = _incoming_components(connection, generation_id, paths)
-    if mode not in {RepositorySearchMode.AUTO, RepositorySearchMode.DEPENDENCY}:
+    if mode is not RepositorySearchMode.DEPENDENCY:
         return _SearchContext(incoming_components=incoming, dependency_trees=())
-    if mode is RepositorySearchMode.DEPENDENCY:
-        roots = tuple(
-            sorted(seed_paths, key=lambda path: _tree_root_key(path, importance))
-        )[:_MAX_DEPENDENCY_TREE_ROOTS]
-    else:
-        roots = _auto_tree_roots(
-            root_rows, query=query, path_prefix=path_prefix, importance=importance
-        )
+    roots = tuple(
+        sorted(seed_paths, key=lambda path: _tree_root_key(path, importance))
+    )[:_MAX_DEPENDENCY_TREE_ROOTS]
     return _SearchContext(
         incoming_components=incoming,
         dependency_trees=_dependency_trees(
@@ -1188,28 +1204,6 @@ def _tree_root_key(path: str, importance: dict[str, float]) -> tuple[bool, float
     return _is_test_path(path), -importance.get(path, 0.0), path
 
 
-def _auto_tree_roots(
-    rows: Sequence[tuple[Any, ...]],
-    *,
-    query: str,
-    path_prefix: str | None,
-    importance: dict[str, float],
-) -> tuple[str, ...]:
-    evidence: dict[str, list[str]] = defaultdict(list)
-    for row in rows:
-        path = str(row[0])
-        if _matches_path_filter(path, path_prefix):
-            evidence[path].append(str(row[3]))
-    concepts = repository_query_concepts(query)
-
-    def root_key(path: str) -> tuple[int, bool, float, str]:
-        combined = " ".join((path, *evidence[path])).casefold()
-        coverage = sum(concept in combined for concept in concepts)
-        return -coverage, _is_test_path(path), -importance.get(path, 0.0), path
-
-    return tuple(sorted(evidence, key=root_key))[:_MAX_DEPENDENCY_TREE_ROOTS]
-
-
 def _is_test_path(path: str) -> bool:
     return any(
         part == "tests" or part.startswith("test_")
@@ -1274,7 +1268,7 @@ def _score_reason(*, path: str, content: str, query: str) -> str:
     return ", ".join(reasons)
 
 
-def _dependency_rows(  # noqa: PLR0914
+def _dependency_rows(  # noqa: PLR0912, PLR0914
     connection: sqlite3.Connection,
     generation_id: int,
     seed_paths: set[str],
@@ -1299,7 +1293,7 @@ def _dependency_rows(  # noqa: PLR0914
     rows = connection.execute(
         "SELECT source, target, kind FROM graph_edges "
         "WHERE generation_id = ? AND target IS NOT NULL "
-        "AND kind IN ('imports', 'references', 'calls', 'inherits')",
+        "AND kind IN ('imports', 'references', 'calls', 'inherits', 'tested_by')",
         (generation_id,),
     ).fetchall()
     for source_value, target_value, kind_value in rows:
@@ -1310,6 +1304,17 @@ def _dependency_rows(  # noqa: PLR0914
         if source not in file_paths or target not in file_paths or source == target:
             continue
         kind = str(kind_value)
+        if kind == "tested_by":
+            if direction in {
+                RepositoryDependencyDirection.DEPENDENTS,
+                RepositoryDependencyDirection.BOTH,
+            }:
+                adjacency[source].add((
+                    target,
+                    kind,
+                    RepositoryDependencyDirection.DEPENDENTS,
+                ))
+            continue
         if direction in {
             RepositoryDependencyDirection.DEPENDENCIES,
             RepositoryDependencyDirection.BOTH,
@@ -1362,16 +1367,26 @@ def _dependency_rows(  # noqa: PLR0914
     result: list[tuple[Any, ...]] = []
     for path, distance, kind, edge_direction in neighbors:
         line_start, line_end, content = chunks_by_path.get(path, (1, 1, path))
+        relationship = (
+            "tested_by"
+            if kind == "tested_by"
+            else f"dependency_distance_{distance}_{edge_direction.value}_via_{kind}"
+        )
+        score_reason = (
+            "test relationship from dependency graph"
+            if kind == "tested_by"
+            else (
+                f"{edge_direction.value} via {kind} "
+                f"({distance} hop{'s' if distance > 1 else ''})"
+            )
+        )
         result.append((
             path,
             line_start,
             line_end,
             content,
-            f"dependency_distance_{distance}_{edge_direction.value}_via_{kind}",
-            (
-                f"{edge_direction.value} via {kind} "
-                f"({distance} hop{'s' if distance > 1 else ''})"
-            ),
+            relationship,
+            score_reason,
             edge_direction.value,
         ))
     return result
