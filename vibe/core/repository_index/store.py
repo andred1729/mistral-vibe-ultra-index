@@ -659,7 +659,7 @@ class RepositoryIndexStore:
         if max_results < 1 or max_results > _MAX_SEARCH_RESULTS:
             raise ValueError("max_results must be between 1 and 100.")
         path_prefix = _normalize_path_filter(path)
-        match_query = _fts_match_query(query)
+        match_query = _fts_match_query(query, mode=mode)
         lexical_rows: list[tuple[Any, ...]] = []
         try:
             with closing(self._connect(read_only=True)) as connection:
@@ -890,11 +890,12 @@ def _copy_unchanged_analysis(
     )
 
 
-def _fts_match_query(query: str) -> str:
+def _fts_match_query(query: str, *, mode: RepositorySearchMode) -> str:
     terms = re.findall(r"[^\W]+", query, flags=re.UNICODE)
     if not terms:
         raise ValueError("Repository search query must contain searchable text.")
-    return " OR ".join(f'"{term}"' for term in terms)
+    operator = " AND " if mode is RepositorySearchMode.TEXT else " OR "
+    return operator.join(f'"{term}"' for term in terms)
 
 
 def _normalize_path_filter(path: str | None) -> str | None:

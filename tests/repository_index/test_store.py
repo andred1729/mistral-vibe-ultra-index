@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from vibe.core.repository_index.models import DiscoveredFile, IndexChunk, IndexStatus
+from vibe.core.repository_index.models import (
+    DiscoveredFile,
+    IndexChunk,
+    IndexStatus,
+    RepositorySearchMode,
+)
 from vibe.core.repository_index.store import (
     RepositoryIndexCorruptError,
     RepositoryIndexStore,
@@ -117,6 +122,44 @@ def test_search_returns_source_cited_chunks_from_selected_generation(
     assert result.matches[0].line_start == 10
     assert result.matches[0].generation == first.id
     assert "PassiveIndex" in result.matches[0].snippet
+
+
+def test_text_search_requires_all_terms_while_auto_search_retains_recall(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    files = [_file("both.py"), _file("alpha.py"), _file("beta.py")]
+    generation = store.publish(
+        root,
+        files,
+        [
+            IndexChunk(
+                path="both.py",
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="alpha beta",
+            ),
+            IndexChunk(
+                path="alpha.py", ordinal=0, line_start=1, line_end=1, content="alpha"
+            ),
+            IndexChunk(
+                path="beta.py", ordinal=0, line_start=1, line_end=1, content="beta"
+            ),
+        ],
+    )
+
+    precise = store.search(
+        generation, "alpha beta", mode=RepositorySearchMode.TEXT, max_results=10
+    )
+    broad = store.search(
+        generation, "alpha beta", mode=RepositorySearchMode.AUTO, max_results=10
+    )
+
+    assert [match.path for match in precise.matches] == ["both.py"]
+    assert {match.path for match in broad.matches} == {"alpha.py", "beta.py", "both.py"}
 
 
 def test_search_rejects_absolute_or_parent_path_filters(tmp_path: Path) -> None:
