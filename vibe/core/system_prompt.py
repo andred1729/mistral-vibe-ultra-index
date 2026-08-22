@@ -355,27 +355,27 @@ def _get_repository_index_section(generation: IndexGeneration) -> str:
 
 A complete repository index was built before this turn.
 
-At the beginning of repository investigation or implementation work, call
-`repo_search` before broad `grep`, file listing, or file reads. Start with an
-`auto` query that describes the user's task to map the likely modules, entry
-points, shared infrastructure, and tests. Refine that map with `symbol` or
-`dependency` queries before opening files. Do not skip this initial mapping just
-because the repository layout looks familiar.
+Use `repo_search` early when it will help localize repository work. An `auto`
+query is a compact locator for likely files and symbols, not an exhaustive map
+of the repository. Use it to find a plausible locus, then verify the relevant
+code with `read_file` or refine a known name with `symbol`. Do not expand broad
+dependency trees before identifying a likely function, symbol, or file.
 
-Dependency searches are directed. Use `direction=dependencies` to inspect what
-a file or symbol requires, `direction=dependents` to inspect incoming consumers,
-and `direction=both` only for broad neighborhood discovery. Impact mode remains
-the shortcut for direct dependents and related tests.
+After locating a likely function or symbol, use `impact` to find its direct
+callers or consumers, related tests, and what an edit could break. Use
+`dependency` with `direction=dependencies` when you need to know what the locus
+calls or requires, `direction=dependents` for incoming callers and consumers,
+or `direction=both` only when you need a bounded neighborhood in both directions.
 
 Use `repo_search` as the primary tool for locating symbols and implementations,
 understanding dependencies, finding related tests, estimating change impact, and
-discovering relevant code. Use `grep` after the initial map for exact text or
-regular-expression searches. Use `read_file` to verify indexed evidence before
-editing a file.
+discovering relevant code. Use `grep` for exact text or regular-expression
+searches. Use `read_file` to verify indexed evidence before editing a file.
 
-Before a dependency-relevant edit, use `repo_search` in impact mode to inspect
-direct dependents and related tests. Treat incomplete language or reference
-coverage as uncertainty, not proof that there is no downstream impact.
+Before a dependency-relevant edit, inspect impact or the appropriate directed
+dependency neighborhood around the identified locus. Treat incomplete language
+or reference coverage as uncertainty, not proof that there is no downstream
+impact.
 
 Repository indexing is automatic. `/index` is a user-facing slash command, not
 a model tool. When the user asks about index health or when indexing reports a

@@ -86,9 +86,18 @@ async def test_model_turn_runs_inside_pinned_index_scope_and_refreshes_prompt(
         assert f"Indexed roots: {tmp_path}" in system_prompt
         assert "recommend `/index status`" in system_prompt
         assert "Continue using `repo_search`" in system_prompt
-        assert "call\n`repo_search` before broad `grep`" in system_prompt
-        assert "Start with an\n`auto` query" in system_prompt
-        assert "Do not skip this initial mapping" in system_prompt
+        assert "An `auto`\nquery is a compact locator" in system_prompt
+        assert "not an exhaustive map" in system_prompt
+        assert (
+            "After locating a likely function or symbol, use `impact`" in system_prompt
+        )
+        assert "related tests, and what an edit could break" in system_prompt
+        assert "`direction=dependencies`" in system_prompt
+        assert "`direction=dependents`" in system_prompt
+        assert (
+            "Do not expand broad\ndependency trees before identifying" in system_prompt
+        )
+        assert "call\n`repo_search` before broad `grep`" not in system_prompt
         yield AssistantEvent(content="indexed")
 
     monkeypatch.setattr(loop, "_perform_llm_turn", perform_turn)

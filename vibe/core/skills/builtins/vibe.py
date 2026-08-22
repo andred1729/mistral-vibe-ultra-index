@@ -738,9 +738,11 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 - `/index [status|refresh|rebuild|cancel|clear]` - Inspect or recover the passive
   repository index. Status is the default. Clear removes only the external index
   database and immediately rebuilds it; repository files are never changed.
-- Repository work uses `repo_search` first to map likely components. Search
-  results group files by module boundary, label shared and test code, suggest
-  follow-up queries, and include bounded outgoing dependency trees where useful.
+- Repository work can use `repo_search` `auto` as a compact locator for likely
+  files and symbols. After finding a likely locus, `impact` finds direct
+  consumers and related tests, while directed `dependency` queries inspect its
+  bounded graph neighborhood. Results group files by module boundary and label
+  shared and test code.
 - `/whoami` - Display the Mistral signed-in user, workspace, and plan
 - `/voice` - Configure voice settings
 - `/mcp` - Display MCP servers and connector status; pass a server or connector

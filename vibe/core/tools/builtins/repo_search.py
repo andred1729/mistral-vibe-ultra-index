@@ -24,21 +24,26 @@ from vibe.core.types import ToolStreamEvent
 class RepoSearchArgs(BaseModel):
     query: str = Field(
         min_length=1,
-        description="Concept, symbol, behavior, dependency, or code text to find.",
+        description=(
+            "Concept, behavior, symbol, or code text to locate. In auto mode, use "
+            "a compact task or symbol query to find a likely locus."
+        ),
     )
     mode: RepositorySearchMode = Field(
         default=RepositorySearchMode.AUTO,
         description=(
-            "auto for general retrieval, text for lexical evidence, symbol for "
-            "definitions/references, dependency for graph neighbors, or impact "
-            "for dependents and related tests."
+            "auto is a compact locator for likely files and symbols; text finds "
+            "lexical evidence; symbol finds definitions/references; impact finds "
+            "direct callers or consumers, related tests, and what could break; "
+            "dependency traverses the graph around a known likely locus."
         ),
     )
     direction: RepositoryDependencyDirection = Field(
         default=RepositoryDependencyDirection.DEPENDENCIES,
         description=(
-            "Graph direction for dependency mode: dependencies for outgoing "
-            "requirements, dependents for incoming consumers, or both."
+            "Direction used by dependency mode: dependencies shows what the locus "
+            "calls or requires; dependents shows incoming callers and consumers; "
+            "both shows a bounded two-way neighborhood."
         ),
     )
     path: str | None = Field(

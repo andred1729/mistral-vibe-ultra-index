@@ -16,6 +16,22 @@ from vibe.core.repository_index import (
 from vibe.core.tools.builtins.repo_search import RepoSearch, RepoSearchArgs
 
 
+def test_repo_search_arguments_guide_staged_graph_queries() -> None:
+    parameters = RepoSearch.get_parameters()["properties"]
+    tool_guidance = RepoSearch.get_full_description()
+
+    assert "compact task or symbol query" in parameters["query"]["description"]
+    assert "auto is a compact locator" in parameters["mode"]["description"]
+    assert "what could break" in parameters["mode"]["description"]
+    assert "known likely locus" in parameters["mode"]["description"]
+    assert "what the locus calls or requires" in parameters["direction"]["description"]
+    assert "incoming callers and consumers" in parameters["direction"]["description"]
+    assert "bounded two-way neighborhood" in parameters["direction"]["description"]
+    assert "not as an exhaustive repository map" in tool_guidance
+    assert "Once you find a plausible function or symbol" in tool_guidance
+    assert "Do not request broad dependency trees" in tool_guidance
+
+
 @pytest.mark.asyncio
 async def test_repo_search_reads_the_generation_pinned_by_the_agent_loop(
     tmp_path: Path,
