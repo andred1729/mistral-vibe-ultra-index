@@ -26,6 +26,7 @@ from vibe.utils.io import read_safe
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfigSchema
+    from vibe.core.repository_index.ports import RepositoryIndexReader
     from vibe.core.tools.connectors.connector_registry import ConnectorRegistry
     from vibe.core.tools.mcp.registry import MCPRegistry
 
@@ -84,7 +85,7 @@ class ToolManager:
     should have its own ToolManager instance.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         config_getter: Callable[[], VibeConfigSchema],
         mcp_registry: MCPRegistry | None = None,
@@ -97,12 +98,14 @@ class ToolManager:
         harness_files: HarnessFilesManager | None = None,
         scratchpad_dir: Path | None = None,
         terminal_runtime: TerminalRuntime | None = None,
+        repository_index: RepositoryIndexReader | None = None,
     ) -> None:
         self._config_getter = config_getter
         self._cwd = (cwd or Path.cwd()).resolve()
         self._harness_files = harness_files or get_harness_files_manager()
         self._scratchpad_dir = scratchpad_dir
         self.terminal_runtime = terminal_runtime or TerminalRuntime()
+        self._repository_index = repository_index
         self._permission_getter = permission_getter
         self._local_managed_shell_runtime_enabled = local_managed_shell_runtime_enabled
         self._mcp_registry = mcp_registry
@@ -317,6 +320,9 @@ class ToolManager:
                 if selected_tool_class is None:
                     continue
                 runtime_available[name] = selected_tool_class
+
+        if self._repository_index is None:
+            runtime_available.pop("repo_search", None)
 
         # Per-source filtering first (MCP server/connector disabled flags).
         result = self._apply_per_source_filtering(runtime_available)
@@ -712,6 +718,7 @@ class ToolManager:
             scratchpad_dir=self._scratchpad_dir,
             terminal_runtime=self.terminal_runtime,
         )
+        instance.bind_repository_index(self._repository_index)
         self._instances[tool_name] = instance
         return instance
 

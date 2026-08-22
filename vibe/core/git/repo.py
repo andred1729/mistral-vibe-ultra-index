@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 import subprocess
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, cast
 
 # GitPython resolves the git executable at import time and raises when it is
 # missing, so it is only imported at runtime by _git_python(). app-server must
@@ -100,6 +100,26 @@ class GitRepo:
     @property
     def working_dir(self) -> Path:
         return Path(self._repo.working_dir)
+
+    def indexable_paths(self) -> tuple[Path, ...]:
+        try:
+            output = cast(
+                str,
+                self._repo.git.execute([
+                    "git",
+                    "-c",
+                    "core.fsmonitor=false",
+                    "ls-files",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                    "-z",
+                ]),
+            )
+        except self._gitpy.git_command_error as e:
+            raise GitError(f"Failed to discover repository files: {e}") from e
+        root = self.working_dir.resolve()
+        return tuple(root / value for value in output.split("\0") if value)
 
     def head_commit(self) -> str:
         return self._repo.head.commit.hexsha

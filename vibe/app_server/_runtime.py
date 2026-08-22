@@ -56,7 +56,12 @@ from vibe.core.experiments.manager import config_variants_from_response
 from vibe.core.experiments.models import EvalResponse
 from vibe.core.hooks.config import load_hooks_from_fs
 from vibe.core.hooks.models import HookConfigResult
-from vibe.core.paths import WORKTREES_DIR
+from vibe.core.paths import VIBE_HOME, WORKTREES_DIR
+from vibe.core.repository_index import (
+    RepositoryIndexReader,
+    RepositoryIndexService,
+    RepositoryIndexUnavailableError,
+)
 from vibe.core.session import last_session_pointer
 from vibe.core.session.session_id import extract_suffix, generate_session_id
 from vibe.core.session.session_index import warm_session_index
@@ -203,6 +208,7 @@ class _AgentLoopBlueprint:
     session_id: str | None = None
     session_dir: Path | None = None
     session_lease: SessionLease | None = None
+    repository_index: RepositoryIndexReader | None = None
     experiment_state: EvalResponse | None = None
     await_experiment_model: bool = False
 
@@ -234,6 +240,7 @@ class _AgentLoopBlueprint:
             session_id=self.session_id,
             session_dir=self.session_dir,
             session_lease=self.session_lease,
+            repository_index=self.repository_index,
         )
 
 
@@ -252,6 +259,7 @@ class _RootRuntimeBlueprint:
     client_capabilities: ClientCapabilities
     hook_config_result: HookConfigResult
     cache_store: FileSystemCacheStore
+    repository_index: RepositoryIndexReader
 
     @property
     def cwd(self) -> Path:
@@ -304,6 +312,7 @@ class _RootRuntimeBlueprint:
             session_lease=session_lease,
             experiment_state=cached,
             await_experiment_model=cached is None and session_id is None,
+            repository_index=self.repository_index,
         ).build()
 
 
@@ -641,6 +650,7 @@ class AgentRuntimeFactory:
             session_dir=session_dir,
             session_lease=session_lease,
             experiment_state=source.experiment_manager.export_state(),
+            repository_index=source.repository_index,
         ).build()
         return replacement
 
@@ -662,6 +672,10 @@ class HarnessProcess:
         self._configured = False
         self._staged_roots: dict[str, AgentLoop] = {}
         self._staged_roots_lock = asyncio.Lock()
+        self._repository_indexes: dict[Path, RepositoryIndexService] = {}
+        self._repository_index_watchers: dict[
+            Path, tuple[asyncio.Event, asyncio.Task[None]]
+        ] = {}
         self._closed = False
         self._experimental_harness = experimental_harness
 
@@ -720,6 +734,20 @@ class HarnessProcess:
                 await close_agent_loop(root)
             except BaseException as exc:
                 errors.append(exc)
+        for stop_event, _ in self._repository_index_watchers.values():
+            stop_event.set()
+        for _, task in self._repository_index_watchers.values():
+            try:
+                await task
+            except BaseException as exc:
+                errors.append(exc)
+        self._repository_index_watchers.clear()
+        for service in self._repository_indexes.values():
+            try:
+                await service.close()
+            except BaseException as exc:
+                errors.append(exc)
+        self._repository_indexes.clear()
         if len(errors) == 1:
             raise errors[0]
         if errors:
@@ -904,6 +932,9 @@ class HarnessProcess:
             client_capabilities=client_capabilities or ClientCapabilities(),
             hook_config_result=hook_config_result,
             cache_store=self.cache_store,
+            repository_index=self._repository_index_for(
+                Path(options.cwd or Path.cwd()).expanduser().resolve()
+            ),
         )
 
     async def open_root(self, request: RootOpenRequest) -> AgentLoop:
@@ -920,6 +951,7 @@ class HarnessProcess:
             blueprint = await self.build_root_blueprint(
                 request.options, request.client_info, request.client_capabilities
             )
+            self._start_repository_index_watcher(blueprint.cwd)
             session_id = request.session_id
             if request.continue_latest:
                 session_id = _find_session_to_continue(
@@ -969,6 +1001,33 @@ class HarnessProcess:
             warm_session_index(config.session_logging)
             set_config_log_level(config.log_level)
             self._configured = True
+
+    def _repository_index_for(self, cwd: Path) -> RepositoryIndexService:
+        service = self._repository_indexes.get(cwd)
+        if service is None:
+            service = RepositoryIndexService(cwd, VIBE_HOME.path / "repository-index")
+            self._repository_indexes[cwd] = service
+        return service
+
+    def _start_repository_index_watcher(self, cwd: Path) -> None:
+        existing = self._repository_index_watchers.get(cwd)
+        if existing is not None and not existing[1].done():
+            return
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            self._watch_repository_index(self._repository_index_for(cwd), stop_event),
+            name=f"repository-index:{cwd.name}",
+        )
+        self._repository_index_watchers[cwd] = (stop_event, task)
+
+    @staticmethod
+    async def _watch_repository_index(
+        service: RepositoryIndexService, stop_event: asyncio.Event
+    ) -> None:
+        try:
+            await service.watch(stop_event)
+        except RepositoryIndexUnavailableError as exc:
+            logger.warning("Repository index watcher stopped: %s", exc)
 
 
 async def create_harness_server(

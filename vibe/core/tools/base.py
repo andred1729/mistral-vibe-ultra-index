@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from vibe.core.agents.manager import AgentManager
     from vibe.core.config import VibeConfigSchema
     from vibe.core.hooks.models import HookConfigResult
+    from vibe.core.repository_index.ports import RepositoryIndexReader
     from vibe.core.skills.manager import SkillManager
     from vibe.core.subagents import SubagentRunnerPort
     from vibe.core.telemetry.types import LaunchContext
@@ -198,6 +199,10 @@ class BaseTool[
         )
         self.scratchpad_dir = scratchpad_dir
         self.terminal_runtime = terminal_runtime or TerminalRuntime()
+        self.repository_index: RepositoryIndexReader | None = None
+
+    def bind_repository_index(self, reader: RepositoryIndexReader | None) -> None:
+        self.repository_index = reader
 
     @property
     def config(self) -> ToolConfig:

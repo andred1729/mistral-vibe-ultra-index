@@ -27,6 +27,7 @@ from vibe.utils.paths import is_dangerous_directory
 if TYPE_CHECKING:
     from vibe.core.agents import AgentManager
     from vibe.core.config import ProjectContextConfig
+    from vibe.core.repository_index.models import IndexGeneration
     from vibe.core.skills.manager import SkillManager
     from vibe.core.tools.manager import ToolManager
 
@@ -349,6 +350,26 @@ def _get_tool_aware_os_system_prompt(tool_manager: ToolManager | None) -> str:
     )
 
 
+def _get_repository_index_section(generation: IndexGeneration) -> str:
+    return f"""## Repository index
+
+A complete repository index was built before this turn.
+
+Use `repo_search` as the primary tool for locating symbols and implementations,
+understanding dependencies, finding related tests, estimating change impact, and
+discovering relevant code when the exact text or path is unknown. Use `grep` for
+exact text or regular-expression searches. Use `read_file` before editing files
+returned by the index.
+
+Before a dependency-relevant edit, use `repo_search` in impact mode to inspect
+direct dependents and related tests. Treat incomplete language or reference
+coverage as uncertainty, not proof that there is no downstream impact.
+
+Index generation: {generation.id}
+Indexed roots: {generation.root}
+Indexed files: {generation.file_count}"""
+
+
 def get_universal_system_prompt(
     config: VibeConfigSchema,
     skill_manager: SkillManager,
@@ -359,10 +380,14 @@ def get_universal_system_prompt(
     cwd: Path | None = None,
     harness_files: HarnessFilesManager | None = None,
     tool_manager: ToolManager | None = None,
+    repository_index_generation: IndexGeneration | None = None,
 ) -> str:
     cwd = (cwd or Path.cwd()).resolve()
     harness_files = harness_files or get_harness_files_manager()
     sections = [_interpolate_prompt(config.system_prompt)]
+
+    if repository_index_generation is not None:
+        sections.append(_get_repository_index_section(repository_index_generation))
 
     if headless:
         sections.append(_get_headless_section())

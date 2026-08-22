@@ -79,6 +79,8 @@ from vibe.core.middleware import (
     make_plan_agent_reminder,
 )
 from vibe.core.plan_session import PlanSession
+from vibe.core.repository_index.models import IndexGeneration
+from vibe.core.repository_index.ports import RepositoryIndexReader
 from vibe.core.review import ReviewManager
 from vibe.core.rewind import RewindManager
 from vibe.core.scratchpad import cleanup_scratchpad, init_scratchpad
@@ -459,6 +461,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         session_id: str | None = None,
         session_dir: Path | None = None,
         session_lease: SessionLease | None = None,
+        repository_index: RepositoryIndexReader | None = None,
     ) -> None:
         self.cwd = (cwd or Path.cwd()).resolve()
         self.harness_files = replace(
@@ -469,6 +472,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._local_managed_shell_runtime_enabled = local_managed_shell_runtime_enabled
         self._headless = headless
         self._is_subagent = is_subagent
+        self.repository_index = repository_index
+        self._repository_index_generation: IndexGeneration | None = None
         self.cache_store = cache_store or InMemoryCacheStore()
 
         self._defer_heavy_init = defer_heavy_init
@@ -531,6 +536,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             cwd=self.cwd,
             harness_files=self.harness_files,
             scratchpad_dir=self.scratchpad_dir,
+            repository_index=self.repository_index,
         )
         self.skill_manager = SkillManager(
             lambda: self.config, harness_files=self.harness_files
@@ -1120,10 +1126,24 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             cwd=self.cwd,
             harness_files=self.harness_files,
             tool_manager=tool_manager or self.tool_manager,
+            repository_index_generation=self._repository_index_generation,
         )
 
     def _build_system_prompt(self) -> str:
         return self._render_system_prompt(self.skill_manager)
+
+    @contextlib.asynccontextmanager
+    async def _repository_index_inference_scope(
+        self,
+    ) -> AsyncGenerator[IndexGeneration | None]:
+        if self.repository_index is None:
+            yield None
+            return
+
+        async with self.repository_index.inference_scope() as generation:
+            self._repository_index_generation = generation
+            self.messages.update_system_prompt(self._build_system_prompt())
+            yield generation
 
     @requires_init
     async def refresh_system_prompt(self) -> None:
@@ -1730,7 +1750,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 user_cancelled = False
                 self._is_user_prompt_call = first_llm_turn
                 try:
-                    async for event in self._perform_llm_turn():
+                    async for event in self._perform_indexed_llm_turn():
                         if is_user_cancellation_event(event):
                             user_cancelled = True
                         yield event
@@ -1976,6 +1996,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         if self.agent_profile.name != profile_before:
             yield AgentProfileChangedEvent(agent_name=self.agent_profile.name)
+
+    async def _perform_indexed_llm_turn(self) -> AsyncGenerator[BaseEvent, None]:
+        async with self._repository_index_inference_scope():
+            async for event in self._perform_llm_turn():
+                yield event
 
     def _build_tool_call_events(
         self, tool_calls: list[ToolCall] | None, emitted_ids: set[str]
@@ -2531,6 +2556,24 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return sum(1 for m in self._current_model_context() if m.images)
 
     async def _complete(
+        self,
+        *,
+        model: ModelConfig,
+        messages: Sequence[LLMMessage],
+        tools: list[AvailableTool] | None,
+        tool_choice: StrToolChoice | AvailableTool | None,
+        call_type: TelemetryCallType | None,
+    ) -> LLMChunk:
+        async with self._repository_index_inference_scope():
+            return await self._complete_without_repository_index(
+                model=model,
+                messages=messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                call_type=call_type,
+            )
+
+    async def _complete_without_repository_index(
         self,
         *,
         model: ModelConfig,
