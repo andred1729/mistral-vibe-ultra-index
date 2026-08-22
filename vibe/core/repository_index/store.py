@@ -24,7 +24,12 @@ from vibe.core.repository_index.models import (
     RepositorySearchMode,
     RepositorySearchResult,
 )
-from vibe.core.repository_index.ranking import rank_repository_matches
+from vibe.core.repository_index.ranking import (
+    add_module_boundaries,
+    group_repository_matches,
+    incoming_component_map,
+    rank_repository_matches,
+)
 
 _SCHEMA_VERSION = 5
 _GRAPH_SCHEMA_VERSION = 3
@@ -716,13 +721,19 @@ class RepositoryIndexStore:
                         (generation.id,),
                     ).fetchall()
                 }
-                structural_coverage = generation.structural_file_count > 0
+                incoming_components = _incoming_components(
+                    connection,
+                    generation.id,
+                    {
+                        str(row[0])
+                        for row in (*lexical_rows, *structural_rows, *dependency_rows)
+                    },
+                )
         except sqlite3.DatabaseError as exc:
             raise RepositoryIndexCorruptError(
                 f"Repository index search failed: {exc}"
             ) from exc
 
-        query_folded = query.casefold()
         lexical_matches = tuple(
             RepositorySearchMatch(
                 root=generation.root,
@@ -731,7 +742,7 @@ class RepositoryIndexStore:
                 line_end=int(row[2]),
                 snippet=str(row[3]),
                 score_reason=_score_reason(
-                    path=str(row[0]), content=str(row[3]), query=query_folded
+                    path=str(row[0]), content=str(row[3]), query=query.casefold()
                 ),
                 generation=generation.id,
             )
@@ -769,8 +780,15 @@ class RepositoryIndexStore:
             for match in (*structural_matches, *lexical_matches, *dependency_matches)
             if _matches_path_filter(match.path, path_prefix)
         )
-        matches = rank_repository_matches(
-            candidates, query=query, importance=importance, max_results=max_results
+        matches, groups = group_repository_matches(
+            rank_repository_matches(
+                add_module_boundaries(
+                    candidates, incoming_components=incoming_components
+                ),
+                query=query,
+                importance=importance,
+                max_results=max_results,
+            )
         )
         return RepositorySearchResult(
             generation=generation,
@@ -781,7 +799,8 @@ class RepositoryIndexStore:
                 for match in candidates
             }),
             matches=matches,
-            structural_coverage=structural_coverage,
+            groups=groups,
+            structural_coverage=generation.structural_file_count > 0,
         )
 
     def prune_generations(
@@ -925,6 +944,23 @@ def _normalize_path_filter(path: str | None) -> str | None:
 
 def _matches_path_filter(path: str, prefix: str | None) -> bool:
     return prefix is None or path == prefix or path.startswith(f"{prefix}/")
+
+
+def _incoming_components(
+    connection: sqlite3.Connection, generation_id: int, paths: set[str]
+) -> dict[str, frozenset[str]]:
+    if not paths:
+        return {}
+    placeholders = ",".join("?" for _ in paths)
+    rows = connection.execute(
+        "SELECT source, target FROM graph_edges "
+        "WHERE generation_id = ? AND kind = 'imports' "
+        f"AND target IN ({placeholders})",
+        (generation_id, *sorted(paths)),
+    ).fetchall()
+    return incoming_component_map([
+        (str(source), str(target)) for source, target in rows
+    ])
 
 
 def _score_reason(*, path: str, content: str, query: str) -> str:

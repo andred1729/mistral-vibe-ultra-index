@@ -8,6 +8,7 @@ import pytest
 from tests.conftest import build_test_agent_loop
 from vibe.core.repository_index import (
     RepositoryIndexService,
+    RepositoryModuleRole,
     RepositorySearchMode,
     RepositorySearchResult,
 )
@@ -43,6 +44,9 @@ async def test_repo_search_reads_the_generation_pinned_by_the_agent_loop(
     assert result.total_matches == 1
     assert result.matches[0].path == "service.py"
     assert result.matches[0].generation == generation.id
+    assert result.matches[0].component == "(root)"
+    assert result.matches[0].module_role is RepositoryModuleRole.ROOT
+    assert result.groups[0].paths == ("service.py",)
 
     call_display = RepoSearch.format_call_display(
         RepoSearchArgs(
@@ -63,6 +67,7 @@ async def test_impact_mode_returns_direct_dependents_and_related_tests(
 ) -> None:
     root = tmp_path / "repository"
     (root / "pkg").mkdir(parents=True)
+    (root / "apps").mkdir()
     (root / "tests").mkdir()
     Repo.init(root, initial_branch="main")
     (root / "pkg" / "service.py").write_text(
@@ -72,6 +77,9 @@ async def test_impact_mode_returns_direct_dependents_and_related_tests(
         "from pkg.service import shared_service\nshared_service()\n", encoding="utf-8"
     )
     (root / "tests" / "test_service.py").write_text(
+        "from pkg.service import shared_service\n", encoding="utf-8"
+    )
+    (root / "apps" / "entry.py").write_text(
         "from pkg.service import shared_service\n", encoding="utf-8"
     )
     service = RepositoryIndexService(root, tmp_path / "indexes")
@@ -84,6 +92,17 @@ async def test_impact_mode_returns_direct_dependents_and_related_tests(
     assert ("pkg/consumer.py", "dependent_via_imports") in relationships
     assert any(path == "tests/test_service.py" for path, _ in relationships)
     assert result.structural_coverage
+    definition = next(
+        match for match in result.matches if match.path == "pkg/service.py"
+    )
+    assert definition.component == "pkg"
+    assert definition.module_role is RepositoryModuleRole.SHARED
+    test_match = next(
+        match for match in result.matches if match.path == "tests/test_service.py"
+    )
+    assert test_match.component == "tests"
+    assert test_match.module_role is RepositoryModuleRole.TEST
+    assert {group.component for group in result.groups} >= {"pkg", "apps", "tests"}
 
 
 @pytest.mark.asyncio

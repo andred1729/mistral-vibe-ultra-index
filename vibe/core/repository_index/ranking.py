@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from pathlib import PurePosixPath
 
-from vibe.core.repository_index.models import RepositorySearchMatch
+from vibe.core.repository_index.models import (
+    RepositoryModuleRole,
+    RepositorySearchGroup,
+    RepositorySearchMatch,
+)
 
 _MAX_RESULT_BYTES = 48_000
 _MAX_SNIPPET_BYTES = 3_000
+_SHARED_COMPONENT_THRESHOLD = 2
 
 
 def rank_repository_matches(
@@ -49,6 +56,76 @@ def rank_repository_matches(
     return tuple(bounded)
 
 
+def add_module_boundaries(
+    matches: Sequence[RepositorySearchMatch],
+    *,
+    incoming_components: Mapping[str, frozenset[str]],
+) -> tuple[RepositorySearchMatch, ...]:
+    return tuple(
+        match.model_copy(
+            update={
+                "component": repository_component(match.path),
+                "module_role": _module_role(match.path, incoming_components),
+            }
+        )
+        for match in matches
+    )
+
+
+def group_repository_matches(
+    matches: Sequence[RepositorySearchMatch],
+) -> tuple[tuple[RepositorySearchMatch, ...], tuple[RepositorySearchGroup, ...]]:
+    grouped: dict[str, list[RepositorySearchMatch]] = {}
+    for match in matches:
+        grouped.setdefault(match.component, []).append(match)
+
+    reordered: list[RepositorySearchMatch] = []
+    summaries: list[RepositorySearchGroup] = []
+    for component, component_matches in grouped.items():
+        reordered.extend(component_matches)
+        summaries.append(
+            RepositorySearchGroup(
+                component=component,
+                module_roles=tuple(
+                    dict.fromkeys(match.module_role for match in component_matches)
+                ),
+                match_count=len(component_matches),
+                paths=tuple(dict.fromkeys(match.path for match in component_matches)),
+            )
+        )
+    return tuple(reordered), tuple(summaries)
+
+
+def repository_component(path: str) -> str:
+    parent = PurePosixPath(path).parent.as_posix()
+    return "(root)" if parent == "." else parent
+
+
+def incoming_component_map(
+    edges: Sequence[tuple[str, str]],
+) -> dict[str, frozenset[str]]:
+    incoming: dict[str, set[str]] = defaultdict(set)
+    for source, target in edges:
+        source_component = repository_component(source)
+        target_component = repository_component(target)
+        if source_component != target_component:
+            incoming[target].add(source_component)
+    return {path: frozenset(components) for path, components in incoming.items()}
+
+
+def _module_role(
+    path: str, incoming_components: Mapping[str, frozenset[str]]
+) -> RepositoryModuleRole:
+    parts = PurePosixPath(path).parts
+    if any(part == "tests" or part.startswith("test_") for part in parts):
+        return RepositoryModuleRole.TEST
+    if repository_component(path) == "(root)":
+        return RepositoryModuleRole.ROOT
+    if len(incoming_components.get(path, ())) >= _SHARED_COMPONENT_THRESHOLD:
+        return RepositoryModuleRole.SHARED
+    return RepositoryModuleRole.FEATURE
+
+
 def _relationship_score(relationship: str) -> int:
     if relationship == "defines":
         return 100
@@ -70,4 +147,10 @@ def _truncate_utf8(value: str, max_bytes: int) -> str:
     return encoded[: max_bytes - 3].decode("utf-8", errors="ignore") + "..."
 
 
-__all__ = ["rank_repository_matches"]
+__all__ = [
+    "add_module_boundaries",
+    "group_repository_matches",
+    "incoming_component_map",
+    "rank_repository_matches",
+    "repository_component",
+]

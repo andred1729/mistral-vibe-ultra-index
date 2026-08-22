@@ -85,6 +85,13 @@ class RepositorySearchMode(StrEnum):
     IMPACT = auto()
 
 
+class RepositoryModuleRole(StrEnum):
+    FEATURE = auto()
+    SHARED = auto()
+    TEST = auto()
+    ROOT = auto()
+
+
 class SymbolFact(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -194,6 +201,17 @@ class RepositorySearchMatch(BaseModel):
     relationship: str = "text_match"
     score_reason: str
     generation: int
+    component: str = "(root)"
+    module_role: RepositoryModuleRole = RepositoryModuleRole.ROOT
+
+
+class RepositorySearchGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    component: str
+    module_roles: tuple[RepositoryModuleRole, ...]
+    match_count: int
+    paths: tuple[str, ...]
 
 
 class RepositorySearchResult(BaseModel):
@@ -204,6 +222,7 @@ class RepositorySearchResult(BaseModel):
     mode: RepositorySearchMode = RepositorySearchMode.AUTO
     total_matches: int
     matches: tuple[RepositorySearchMatch, ...]
+    groups: tuple[RepositorySearchGroup, ...] = ()
     structural_coverage: bool = False
 
 
