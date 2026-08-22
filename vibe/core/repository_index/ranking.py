@@ -6,13 +6,16 @@ from pathlib import PurePosixPath
 
 from vibe.core.repository_index.models import (
     RepositoryModuleRole,
+    RepositoryQuerySuggestion,
     RepositorySearchGroup,
     RepositorySearchMatch,
+    RepositorySearchMode,
 )
 
 _MAX_RESULT_BYTES = 48_000
 _MAX_SNIPPET_BYTES = 3_000
 _SHARED_COMPONENT_THRESHOLD = 2
+_MAX_QUERY_SUGGESTIONS = 3
 
 
 def rank_repository_matches(
@@ -101,6 +104,69 @@ def repository_component(path: str) -> str:
     return "(root)" if parent == "." else parent
 
 
+def suggest_repository_queries(
+    *,
+    query: str,
+    mode: RepositorySearchMode,
+    matches: Sequence[RepositorySearchMatch],
+    groups: Sequence[RepositorySearchGroup],
+) -> tuple[RepositoryQuerySuggestion, ...]:
+    suggestions: list[RepositoryQuerySuggestion] = []
+    if definition := next(
+        (match for match in matches if match.relationship == "defines"), None
+    ):
+        suggestions.append(
+            RepositoryQuerySuggestion(
+                query=definition.symbol or definition.snippet,
+                mode=RepositorySearchMode.IMPACT,
+                reason="Inspect dependents and tests for the strongest definition.",
+            )
+        )
+
+    if refinement := _refinement_mode(mode):
+        suggestions.append(
+            RepositoryQuerySuggestion(
+                query=query,
+                mode=refinement,
+                reason=f"Refine the initial evidence with {refinement.value} search.",
+            )
+        )
+
+    if group := next((item for item in groups if item.component != "(root)"), None):
+        suggestions.append(
+            RepositoryQuerySuggestion(
+                query=query,
+                mode=RepositorySearchMode.AUTO,
+                path=group.component,
+                reason="Focus on the highest-ranked repository component.",
+            )
+        )
+
+    unique: dict[
+        tuple[str, RepositorySearchMode, str | None], RepositoryQuerySuggestion
+    ]
+    unique = {}
+    for suggestion in suggestions:
+        unique.setdefault(
+            (suggestion.query, suggestion.mode, suggestion.path), suggestion
+        )
+    return tuple(unique.values())[:_MAX_QUERY_SUGGESTIONS]
+
+
+def _refinement_mode(mode: RepositorySearchMode) -> RepositorySearchMode | None:
+    match mode:
+        case RepositorySearchMode.AUTO:
+            return RepositorySearchMode.DEPENDENCY
+        case RepositorySearchMode.TEXT:
+            return RepositorySearchMode.SYMBOL
+        case RepositorySearchMode.SYMBOL:
+            return RepositorySearchMode.DEPENDENCY
+        case RepositorySearchMode.DEPENDENCY:
+            return RepositorySearchMode.IMPACT
+        case RepositorySearchMode.IMPACT:
+            return None
+
+
 def incoming_component_map(
     edges: Sequence[tuple[str, str]],
 ) -> dict[str, frozenset[str]]:
@@ -153,4 +219,5 @@ __all__ = [
     "incoming_component_map",
     "rank_repository_matches",
     "repository_component",
+    "suggest_repository_queries",
 ]

@@ -29,6 +29,7 @@ from vibe.core.repository_index.ranking import (
     group_repository_matches,
     incoming_component_map,
     rank_repository_matches,
+    suggest_repository_queries,
 )
 
 _SCHEMA_VERSION = 5
@@ -755,6 +756,7 @@ class RepositoryIndexStore:
                 path=str(row[0]),
                 line_start=int(row[1]),
                 line_end=int(row[2]),
+                symbol=str(row[3]),
                 snippet=str(row[3]),
                 relationship=str(row[4]),
                 score_reason=str(row[5]),
@@ -800,6 +802,9 @@ class RepositoryIndexStore:
             }),
             matches=matches,
             groups=groups,
+            suggestions=suggest_repository_queries(
+                query=query, mode=mode, matches=matches, groups=groups
+            ),
             structural_coverage=generation.structural_file_count > 0,
         )
 

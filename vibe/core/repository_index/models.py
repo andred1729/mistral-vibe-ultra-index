@@ -214,6 +214,15 @@ class RepositorySearchGroup(BaseModel):
     paths: tuple[str, ...]
 
 
+class RepositoryQuerySuggestion(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    query: str
+    mode: RepositorySearchMode
+    path: str | None = None
+    reason: str
+
+
 class RepositorySearchResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
@@ -223,6 +232,7 @@ class RepositorySearchResult(BaseModel):
     total_matches: int
     matches: tuple[RepositorySearchMatch, ...]
     groups: tuple[RepositorySearchGroup, ...] = ()
+    suggestions: tuple[RepositoryQuerySuggestion, ...] = ()
     structural_coverage: bool = False
 
 

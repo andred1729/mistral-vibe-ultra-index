@@ -47,6 +47,12 @@ async def test_repo_search_reads_the_generation_pinned_by_the_agent_loop(
     assert result.matches[0].component == "(root)"
     assert result.matches[0].module_role is RepositoryModuleRole.ROOT
     assert result.groups[0].paths == ("service.py",)
+    assert {
+        (suggestion.query, suggestion.mode) for suggestion in result.suggestions
+    } >= {
+        ("HydratedDependencyGraph", RepositorySearchMode.IMPACT),
+        ("HydratedDependencyGraph", RepositorySearchMode.DEPENDENCY),
+    }
 
     call_display = RepoSearch.format_call_display(
         RepoSearchArgs(
