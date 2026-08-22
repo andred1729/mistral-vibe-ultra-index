@@ -89,6 +89,8 @@ class ToolCallMessage(StatusMessage):
 
         super().__init__()
         self.add_class("tool-call")
+        if self._tool_name == "repo_search":
+            self.add_class("repo-search")
 
         if isinstance(entry.state, CompletedEffectState):
             self._is_spinning = False
@@ -266,6 +268,8 @@ class ToolResultMessage(ClickWithoutDragMixin, Static):
 
         super().__init__()
         self.add_class("tool-result")
+        if self._tool_name == "repo_search":
+            self.add_class("repo-search")
 
     @property
     def tool_name(self) -> str:

@@ -16,6 +16,7 @@ from vibe.core.tools.base import (
     ToolError,
     ToolPermission,
 )
+from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from vibe.core.types import ToolStreamEvent
 
 
@@ -44,8 +45,36 @@ class RepoSearchConfig(BaseToolConfig):
 
 
 class RepoSearch(
-    BaseTool[RepoSearchArgs, RepositorySearchResult, RepoSearchConfig, BaseToolState]
+    BaseTool[RepoSearchArgs, RepositorySearchResult, RepoSearchConfig, BaseToolState],
+    ToolUIData[RepoSearchArgs, RepositorySearchResult],
 ):
+    @classmethod
+    def format_call_display(cls, args: RepoSearchArgs) -> ToolCallDisplay:
+        return ToolCallDisplay(
+            summary="Repo_Search",
+            verb="Searching",
+            message="Repo_Search",
+            settled_verb="Searched",
+            settled_message="Repo_Search",
+        )
+
+    @classmethod
+    def format_result_display(cls, result: RepositorySearchResult) -> ToolResultDisplay:
+        returned = len(result.matches)
+        return ToolResultDisplay(
+            success=True,
+            verb="Searched",
+            message="Repo_Search",
+            suffix=(
+                f"· {returned} of {result.total_matches} matches "
+                f"· generation {result.generation.id}"
+            ),
+        )
+
+    @classmethod
+    def get_status_text(cls) -> str:
+        return "Searching repository"
+
     async def run(
         self, args: RepoSearchArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | RepositorySearchResult, None]:

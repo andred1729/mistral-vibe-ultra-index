@@ -885,6 +885,11 @@ StatusMessage {
     text-wrap: wrap;
 }
 
+.repo-search .status-indicator-text {
+    color: $primary;
+    text-style: bold;
+}
+
 /* With a suffix (e.g. "(scratchpad)") the title takes its content width so the
    suffix sits directly after it instead of being pushed to the right edge by a
    1fr title that fills the row. */

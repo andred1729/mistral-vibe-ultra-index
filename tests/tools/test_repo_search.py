@@ -11,6 +11,7 @@ from vibe.core.repository_index import (
     RepositorySearchMode,
     RepositorySearchResult,
 )
+from vibe.core.tools.builtins.repo_search import RepoSearch, RepoSearchArgs
 
 
 @pytest.mark.asyncio
@@ -42,6 +43,18 @@ async def test_repo_search_reads_the_generation_pinned_by_the_agent_loop(
     assert result.total_matches == 1
     assert result.matches[0].path == "service.py"
     assert result.matches[0].generation == generation.id
+
+    call_display = RepoSearch.format_call_display(
+        RepoSearchArgs(
+            query="HydratedDependencyGraph", mode=RepositorySearchMode.SYMBOL, limit=5
+        )
+    )
+    assert call_display.message == "Repo_Search"
+    assert "(" not in call_display.summary
+
+    result_display = RepoSearch.format_result_display(result)
+    assert result_display.text == "Searched Repo_Search"
+    assert result_display.suffix == "· 1 of 1 matches · generation 1"
 
 
 @pytest.mark.asyncio
