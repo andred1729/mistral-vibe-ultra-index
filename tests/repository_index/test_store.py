@@ -194,6 +194,51 @@ def test_text_search_treats_quoted_terms_as_an_exact_phrase(tmp_path: Path) -> N
     assert [match.path for match in result.matches] == ["adjacent.py"]
 
 
+def test_auto_search_expands_identifier_concepts_and_prioritizes_coverage(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    generation = store.publish(
+        root,
+        [_file("api.py"), _file("compiler.py"), _file("tests/test_feature.py")],
+        [
+            IndexChunk(
+                path="api.py",
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="class FilteredRelation: pass",
+            ),
+            IndexChunk(
+                path="compiler.py",
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="filtered relation select related compiler hydration",
+            ),
+            IndexChunk(
+                path="tests/test_feature.py",
+                ordinal=0,
+                line_start=1,
+                line_end=3,
+                content="select related\nselect related\nselect related",
+            ),
+        ],
+    )
+
+    result = store.search(
+        generation,
+        "FilteredRelation select_related",
+        mode=RepositorySearchMode.AUTO,
+        max_results=10,
+    )
+
+    assert result.matches[0].path == "compiler.py"
+    assert sum(match.path == "tests/test_feature.py" for match in result.matches) <= 3
+
+
 def test_search_rejects_absolute_or_parent_path_filters(tmp_path: Path) -> None:
     root = tmp_path / "repository"
     root.mkdir()

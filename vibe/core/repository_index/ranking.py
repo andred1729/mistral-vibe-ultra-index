@@ -17,6 +17,7 @@ _MAX_RESULT_BYTES = 48_000
 _MAX_SNIPPET_BYTES = 3_000
 _SHARED_COMPONENT_THRESHOLD = 2
 _MAX_QUERY_SUGGESTIONS = 3
+_MAX_MATCHES_PER_PATH = 3
 
 
 def rank_repository_matches(
@@ -27,6 +28,7 @@ def rank_repository_matches(
     max_results: int,
 ) -> tuple[RepositorySearchMatch, ...]:
     query_folded = query.casefold()
+    query_concepts = repository_query_concepts(query)
     unique: dict[tuple[str, int, str], RepositorySearchMatch] = {}
     for match in matches:
         unique.setdefault((match.path, match.line_start, match.relationship), match)
@@ -34,6 +36,8 @@ def rank_repository_matches(
     ordered = sorted(
         unique.values(),
         key=lambda match: (
+            -_query_concept_coverage(match, query_concepts),
+            _result_path_rank(match.path),
             -_relationship_score(match.relationship),
             -int(query_folded in match.path.casefold()),
             -importance.get(match.path, 0.0),
@@ -42,8 +46,11 @@ def rank_repository_matches(
         ),
     )
     bounded: list[RepositorySearchMatch] = []
+    path_counts: dict[str, int] = defaultdict(int)
     used_bytes = 0
     for match in ordered:
+        if path_counts[match.path] >= _MAX_MATCHES_PER_PATH:
+            continue
         snippet = _truncate_utf8(match.snippet, _MAX_SNIPPET_BYTES)
         reason = match.score_reason
         file_importance = importance.get(match.path)
@@ -54,6 +61,7 @@ def rank_repository_matches(
         if bounded and used_bytes + result_bytes > _MAX_RESULT_BYTES:
             break
         bounded.append(result)
+        path_counts[match.path] += 1
         used_bytes += result_bytes
         if len(bounded) == max_results:
             break
@@ -103,6 +111,16 @@ def group_repository_matches(
 def repository_component(path: str) -> str:
     parent = PurePosixPath(path).parent.as_posix()
     return "(root)" if parent == "." else parent
+
+
+def repository_query_concepts(query: str) -> tuple[str, ...]:
+    concepts: list[str] = []
+    for token in re.findall(r"[^\W]+", query, flags=re.UNICODE):
+        parts = re.findall(
+            r"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|\d+", token.replace("_", " ")
+        )
+        concepts.extend(part.casefold() for part in parts or (token,))
+    return tuple(dict.fromkeys(concepts))
 
 
 def suggest_repository_queries(
@@ -221,6 +239,24 @@ def _relationship_score(relationship: str) -> int:
     return 50
 
 
+def _result_path_rank(path: str) -> int:
+    parts = PurePosixPath(path).parts
+    if any(part in {"docs", "doc"} for part in parts):
+        return 2
+    if any(part == "tests" or part.startswith("test_") for part in parts):
+        return 1
+    return 0
+
+
+def _query_concept_coverage(
+    match: RepositorySearchMatch, concepts: Sequence[str]
+) -> int:
+    evidence = " ".join(
+        value for value in (match.path, match.symbol, match.snippet) if value
+    ).casefold()
+    return sum(concept in evidence for concept in concepts)
+
+
 def _truncate_utf8(value: str, max_bytes: int) -> str:
     encoded = value.encode("utf-8")
     if len(encoded) <= max_bytes:
@@ -234,5 +270,6 @@ __all__ = [
     "incoming_component_map",
     "rank_repository_matches",
     "repository_component",
+    "repository_query_concepts",
     "suggest_repository_queries",
 ]

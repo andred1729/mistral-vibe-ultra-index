@@ -191,4 +191,6 @@ async def test_revalidates_repository_after_graph_hydration(tmp_path: Path) -> N
     result = await service.search("value = 2")
 
     assert generation.id == 1
-    assert result.total_matches == 1
+    assert result.total_matches >= 1
+    assert any(match.snippet == "value = 2" for match in result.matches)
+    assert all("value = 1" not in match.snippet for match in result.matches)

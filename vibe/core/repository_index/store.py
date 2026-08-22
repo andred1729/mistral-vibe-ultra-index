@@ -32,6 +32,7 @@ from vibe.core.repository_index.ranking import (
     group_repository_matches,
     incoming_component_map,
     rank_repository_matches,
+    repository_query_concepts,
     suggest_repository_queries,
 )
 
@@ -970,7 +971,8 @@ def _fts_match_query(query: str, *, mode: RepositorySearchMode) -> str:
     if not terms:
         raise ValueError("Repository search query must contain searchable text.")
     if mode is not RepositorySearchMode.TEXT:
-        return " OR ".join(f'"{term}"' for term in terms)
+        expanded = tuple(dict.fromkeys((*terms, *repository_query_concepts(query))))
+        return " OR ".join(f'"{term}"' for term in expanded)
 
     clauses: list[str] = []
     for match in re.finditer(r'"([^"]+)"|([^\s"]+)', query):
