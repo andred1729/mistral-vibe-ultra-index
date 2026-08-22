@@ -1140,7 +1140,38 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             yield None
             return
 
-        async with self.repository_index.inference_scope() as generation:
+        started = time.perf_counter()
+        async with contextlib.AsyncExitStack() as stack:
+            try:
+                generation = await stack.enter_async_context(
+                    self.repository_index.inference_scope()
+                )
+            except Exception as exc:
+                self.telemetry_client.send_telemetry_event(
+                    "vibe.repository_index_barrier",
+                    {
+                        "status": "failure",
+                        "duration_ms": round((time.perf_counter() - started) * 1000),
+                        "file_count": 0,
+                        "structural_file_count": 0,
+                        "degraded_file_count": 0,
+                        "language_categories": [],
+                        "failure_class": type(exc).__name__,
+                    },
+                )
+                raise
+            self.telemetry_client.send_telemetry_event(
+                "vibe.repository_index_barrier",
+                {
+                    "status": "success",
+                    "duration_ms": round((time.perf_counter() - started) * 1000),
+                    "file_count": generation.file_count,
+                    "structural_file_count": generation.structural_file_count,
+                    "degraded_file_count": generation.degraded_file_count,
+                    "language_categories": sorted(generation.language_counts),
+                    "failure_class": None,
+                },
+            )
             self._repository_index_generation = generation
             self.messages.update_system_prompt(self._build_system_prompt())
             yield generation

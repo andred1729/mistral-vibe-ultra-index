@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections import Counter
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 import hashlib
@@ -20,10 +21,13 @@ from vibe.core.repository_index.discovery import (
 from vibe.core.repository_index.facts import build_file_facts
 from vibe.core.repository_index.graph import hydrate_dependency_graph
 from vibe.core.repository_index.models import (
+    DiscoveredFile,
+    FileFacts,
     IndexGeneration,
     IndexPhase,
     IndexStatus,
     RepositoryIndexState,
+    RepositoryMap,
     RepositorySearchMode,
     RepositorySearchResult,
 )
@@ -104,8 +108,10 @@ class RepositoryIndexService:
                     )
                     indexed_files = ()
                     chunk_count = 0
+                    cached = await asyncio.to_thread(store.cached_facts, result.files)
                     if current is not None:
                         indexed_files = await asyncio.to_thread(store.files, current.id)
+                        current = _with_coverage(current, result.files, cached)
                         chunk_count = await asyncio.to_thread(
                             store.chunk_count, current.id
                         )
@@ -158,9 +164,6 @@ class RepositoryIndexService:
                             IndexPhase.PARSING,
                             processed=len(changed_files),
                             total=len(result.files),
-                        )
-                        cached = await asyncio.to_thread(
-                            store.cached_facts, result.files
                         )
                         facts = await asyncio.to_thread(
                             build_file_facts,
@@ -245,6 +248,11 @@ class RepositoryIndexService:
                     graph,
                     base_generation_id,
                     changed_paths,
+                )
+                generation = _with_coverage(
+                    generation,
+                    result.files,
+                    {(fact.content_hash, fact.language): fact for fact in facts},
                 )
                 await self._prune(store, result.root)
                 self._state = RepositoryIndexState(
@@ -359,6 +367,23 @@ class RepositoryIndexService:
             generation, query, mode=mode, path=path, max_results=max_results
         )
 
+    async def compact_map(self, *, max_files: int = 50) -> RepositoryMap:
+        generation = self.pinned_generation() or await self.ensure_ready()
+        if self._store is None:
+            raise RepositoryIndexUnavailableError(
+                "Repository index storage is unavailable."
+            )
+        try:
+            return await asyncio.to_thread(
+                self._store.compact_map, generation, max_files=max_files
+            )
+        except Exception as exc:
+            if isinstance(exc, ValueError):
+                raise
+            raise RepositoryIndexUnavailableError(
+                f"Repository map is unavailable: {exc}"
+            ) from exc
+
     def cancel(self) -> None:
         self._cancel_event.set()
 
@@ -433,3 +458,26 @@ class RepositoryIndexService:
             raise RepositoryIndexUnavailableError(
                 f"Repository index search is unavailable: {exc}"
             ) from exc
+
+
+def _with_coverage(
+    generation: IndexGeneration,
+    files: tuple[DiscoveredFile, ...],
+    facts: Mapping[tuple[str, str], FileFacts],
+) -> IndexGeneration:
+    language_counts = Counter(file.language for file in files)
+    parse_error_count = sum(
+        1
+        for file in files
+        if (fact := facts.get((file.content_hash, file.language))) is not None
+        and fact.parse_error is not None
+    )
+    structural_file_count = language_counts.get("python", 0) - parse_error_count
+    return generation.model_copy(
+        update={
+            "language_counts": dict(sorted(language_counts.items())),
+            "structural_file_count": structural_file_count,
+            "degraded_file_count": len(files) - structural_file_count,
+            "parse_error_count": parse_error_count,
+        }
+    )

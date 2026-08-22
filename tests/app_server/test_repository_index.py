@@ -79,11 +79,18 @@ async def test_controller_starts_background_refresh_and_projects_state(
     service = RepositoryIndexService(root, tmp_path / "index")
     tasks: list[asyncio.Task[None]] = []
     notifications = []
+    telemetry = []
 
     async def notify(method, payload):
         notifications.append((method, payload))
 
-    controller = RepositoryIndexController(service, "session", notify, tasks.append)
+    controller = RepositoryIndexController(
+        service,
+        "session",
+        notify,
+        tasks.append,
+        lambda name, properties: telemetry.append((name, properties)),
+    )
 
     response = await controller.refresh()
     assert response.started
@@ -95,4 +102,14 @@ async def test_controller_starts_background_refresh_and_projects_state(
     assert status.status == "complete"
     assert status.generation == 1
     assert status.file_count == 1
+    assert status.language_counts == {"python": 1}
+    assert status.structural_file_count == 1
+    assert status.degraded_file_count == 0
     assert notifications[0][0] == "repositoryIndex/updated"
+    assert {item[1].index.status for item in notifications} >= {"building", "complete"}
+    assert telemetry[0][0] == "vibe.repository_index_operation"
+    assert telemetry[0][1]["status"] == "success"
+
+    compact_map = await controller.compact_map()
+    assert compact_map.generation == 1
+    assert compact_map.entries[0].path == "module.py"

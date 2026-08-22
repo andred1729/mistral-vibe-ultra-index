@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 from git import Repo
 import pytest
@@ -16,6 +17,7 @@ from vibe.core.repository_index.models import (
     IndexGeneration,
     IndexStatus,
     RepositoryIndexState,
+    RepositorySearchMode,
     RepositorySearchResult,
 )
 from vibe.core.types import AssistantEvent, BaseEvent
@@ -53,7 +55,12 @@ class _RecordingIndexReader:
             self.active = False
 
     async def search(
-        self, query: str, *, max_results: int = 20
+        self,
+        query: str,
+        *,
+        mode: RepositorySearchMode = RepositorySearchMode.AUTO,
+        path: str | None = None,
+        max_results: int = 20,
     ) -> RepositorySearchResult:
         raise NotImplementedError
 
@@ -64,6 +71,8 @@ async def test_model_turn_runs_inside_pinned_index_scope_and_refreshes_prompt(
 ) -> None:
     reader = _RecordingIndexReader(tmp_path)
     loop = build_test_agent_loop(cwd=tmp_path, repository_index=reader)
+    telemetry = Mock()
+    monkeypatch.setattr(loop.telemetry_client, "send_telemetry_event", telemetry)
 
     async def perform_turn() -> AsyncGenerator[BaseEvent, None]:
         assert reader.active
@@ -82,6 +91,9 @@ async def test_model_turn_runs_inside_pinned_index_scope_and_refreshes_prompt(
     ]
     assert reader.entries == 1
     assert not reader.active
+    telemetry.assert_called_once()
+    assert telemetry.call_args.args[0] == "vibe.repository_index_barrier"
+    assert telemetry.call_args.args[1]["status"] == "success"
 
 
 def test_repo_search_is_only_exposed_when_index_reader_is_injected(

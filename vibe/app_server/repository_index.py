@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import Field
+
 from vibe.app_server._model import ProtocolModel
 
 type RepositoryIndexPublicStatus = Literal[
@@ -19,6 +21,10 @@ class RepositoryIndexView(ProtocolModel):
     dirty: bool
     generation: int | None = None
     file_count: int = 0
+    language_counts: dict[str, int] = Field(default_factory=dict)
+    structural_file_count: int = 0
+    degraded_file_count: int = 0
+    parse_error_count: int = 0
     files_processed: int = 0
     files_total: int = 0
     created_at: str | None = None
@@ -47,8 +53,22 @@ class RepositoryIndexUpdatedParams(ProtocolModel):
     index: RepositoryIndexView
 
 
+class RepositoryIndexMapEntry(ProtocolModel):
+    path: str
+    importance: float
+    component: int
+    symbols: list[str] = Field(default_factory=list)
+
+
+class RepositoryIndexMapResponse(ProtocolModel):
+    generation: int
+    entries: list[RepositoryIndexMapEntry]
+
+
 __all__ = [
     "RepositoryIndexCancelResponse",
+    "RepositoryIndexMapEntry",
+    "RepositoryIndexMapResponse",
     "RepositoryIndexMutationResponse",
     "RepositoryIndexParams",
     "RepositoryIndexStatusResponse",

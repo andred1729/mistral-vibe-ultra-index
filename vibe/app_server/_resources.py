@@ -166,6 +166,7 @@ class ResourceRequestHandler:
             agent_loop.session_id,
             notify,
             track_background_task,
+            agent_loop.telemetry_client.send_telemetry_event,
         )
         self._mcp_discovery_errors: dict[str, str] = {}
         self.restore_loops()
@@ -209,6 +210,8 @@ class ResourceRequestHandler:
         match method:
             case "repositoryIndex/status":
                 response: ProtocolModel = self._repository_index.status()
+            case "repositoryIndex/map":
+                response = await self._repository_index.compact_map()
             case "repositoryIndex/refresh":
                 self._execution.require_idle()
                 response = await self._repository_index.refresh()

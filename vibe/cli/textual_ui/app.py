@@ -3343,6 +3343,12 @@ class VibeApp(App):  # noqa: PLR0904
         root = f"`{view.root}`" if view.root is not None else "not resolved"
         detail = f"\n\n{action}." if action is not None else ""
         error = f"\n- **Error**: {view.error}" if view.error is not None else ""
+        languages = (
+            ", ".join(
+                f"{name} ({count:,})" for name, count in view.language_counts.items()
+            )
+            or "none"
+        )
         await self._mount_and_scroll(
             UserCommandMessage(
                 "## Repository Index\n\n"
@@ -3351,6 +3357,10 @@ class VibeApp(App):  # noqa: PLR0904
                 f"- **Generation**: {generation}\n"
                 f"- **Root**: {root}\n"
                 f"- **Files**: {view.file_count:,}\n"
+                f"- **Structural/Fallback**: {view.structural_file_count:,}/"
+                f"{view.degraded_file_count:,}\n"
+                f"- **Parser errors**: {view.parse_error_count:,}\n"
+                f"- **Languages**: {languages}\n"
                 f"- **Progress**: {view.files_processed:,}/{view.files_total:,}\n"
                 f"- **Dirty**: {'yes' if view.dirty else 'no'}"
                 f"{error}{detail}"

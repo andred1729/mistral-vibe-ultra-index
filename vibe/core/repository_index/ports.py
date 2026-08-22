@@ -6,6 +6,7 @@ from typing import Protocol
 from vibe.core.repository_index.models import (
     IndexGeneration,
     RepositoryIndexState,
+    RepositoryMap,
     RepositorySearchMode,
     RepositorySearchResult,
 )
@@ -25,6 +26,8 @@ class RepositoryIndexReader(Protocol):
         path: str | None = None,
         max_results: int = 20,
     ) -> RepositorySearchResult: ...
+
+    async def compact_map(self, *, max_files: int = 50) -> RepositoryMap: ...
 
 
 class RepositoryIndexLifecycle(RepositoryIndexReader, Protocol):

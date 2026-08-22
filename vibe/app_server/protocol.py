@@ -130,6 +130,7 @@ SERVER_METHODS: tuple[str, ...] = (
     "review/turnDiff",
     "repositoryIndex/cancel",
     "repositoryIndex/clear",
+    "repositoryIndex/map",
     "repositoryIndex/rebuild",
     "repositoryIndex/refresh",
     "repositoryIndex/status",

@@ -8,6 +8,7 @@ from vibe.app_server.connection import AppServerResourceConnection
 from vibe.app_server.protocol import Notification
 from vibe.app_server.repository_index import (
     RepositoryIndexCancelResponse,
+    RepositoryIndexMapResponse,
     RepositoryIndexMutationResponse,
     RepositoryIndexParams,
     RepositoryIndexStatusResponse,
@@ -54,6 +55,16 @@ class RepositoryIndexResource:
 
     async def refresh(self) -> RepositoryIndexMutationResponse:
         return await self._mutation("repositoryIndex/refresh")
+
+    async def compact_map(self) -> RepositoryIndexMapResponse:
+        client = await self._connection.connect()
+        return validate_wire(
+            RepositoryIndexMapResponse,
+            await client.request(
+                "repositoryIndex/map",
+                RepositoryIndexParams(session_id=self._state.session_id),
+            ),
+        )
 
     async def rebuild(self) -> RepositoryIndexMutationResponse:
         return await self._mutation("repositoryIndex/rebuild")

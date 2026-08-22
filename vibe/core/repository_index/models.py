@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum, auto
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class IndexStatus(StrEnum):
@@ -163,6 +163,10 @@ class IndexGeneration(BaseModel):
     created_at: str
     completed_at: str | None = None
     topology_fingerprint: str | None = None
+    language_counts: dict[str, int] = Field(default_factory=dict)
+    structural_file_count: int = 0
+    degraded_file_count: int = 0
+    parse_error_count: int = 0
 
 
 class RepositoryIndexState(BaseModel):
@@ -201,3 +205,19 @@ class RepositorySearchResult(BaseModel):
     total_matches: int
     matches: tuple[RepositorySearchMatch, ...]
     structural_coverage: bool = False
+
+
+class RepositoryMapEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str
+    importance: float
+    component: int
+    symbols: tuple[str, ...] = ()
+
+
+class RepositoryMap(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    generation: int
+    entries: tuple[RepositoryMapEntry, ...]

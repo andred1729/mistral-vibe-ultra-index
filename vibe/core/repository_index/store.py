@@ -18,6 +18,8 @@ from vibe.core.repository_index.models import (
     IndexChunk,
     IndexGeneration,
     IndexStatus,
+    RepositoryMap,
+    RepositoryMapEntry,
     RepositorySearchMatch,
     RepositorySearchMode,
     RepositorySearchResult,
@@ -30,6 +32,8 @@ _STRUCTURED_SEARCH_SCHEMA_VERSION = 4
 _CONTENT_FACT_SCHEMA_VERSION = 5
 _MAX_SEARCH_RESULTS = 100
 _MAX_IMPACT_DEFINITIONS = 5
+_MAX_MAP_FILES = 200
+_MAX_MAP_SYMBOLS_PER_FILE = 20
 
 
 class RepositoryIndexCorruptError(Exception): ...
@@ -598,6 +602,51 @@ class RepositoryIndexStore:
             for row in rows
         )
 
+    def compact_map(
+        self, generation: IndexGeneration, *, max_files: int = 50
+    ) -> RepositoryMap:
+        if max_files < 1 or max_files > _MAX_MAP_FILES:
+            raise ValueError("max_files must be between 1 and 200.")
+        try:
+            with closing(self._connect(read_only=True)) as connection:
+                score_rows = connection.execute(
+                    "SELECT path, importance, component FROM file_scores "
+                    "WHERE generation_id = ? "
+                    "ORDER BY importance DESC, path LIMIT ?",
+                    (generation.id, max_files),
+                ).fetchall()
+                paths = [str(row[0]) for row in score_rows]
+                symbols: dict[str, list[str]] = defaultdict(list)
+                if paths:
+                    placeholders = ",".join("?" for _ in paths)
+                    symbol_rows = connection.execute(
+                        "SELECT f.path, s.qualified_name FROM files AS f "
+                        "JOIN symbol_cache AS s ON s.content_hash = f.content_hash "
+                        "AND s.language = f.language "
+                        f"WHERE f.generation_id = ? AND f.path IN ({placeholders}) "
+                        "ORDER BY f.path, s.line_start LIMIT 1000",
+                        (generation.id, *paths),
+                    ).fetchall()
+                    for path, symbol in symbol_rows:
+                        if len(symbols[str(path)]) < _MAX_MAP_SYMBOLS_PER_FILE:
+                            symbols[str(path)].append(str(symbol))
+        except sqlite3.DatabaseError as exc:
+            raise RepositoryIndexCorruptError(
+                f"Repository map is unreadable: {exc}"
+            ) from exc
+        return RepositoryMap(
+            generation=generation.id,
+            entries=tuple(
+                RepositoryMapEntry(
+                    path=str(row[0]),
+                    importance=float(row[1]),
+                    component=int(row[2]),
+                    symbols=tuple(symbols[str(row[0])]),
+                )
+                for row in score_rows
+            ),
+        )
+
     def search(
         self,
         generation: IndexGeneration,
@@ -667,14 +716,7 @@ class RepositoryIndexStore:
                         (generation.id,),
                     ).fetchall()
                 }
-                structural_coverage = (
-                    connection.execute(
-                        "SELECT 1 FROM files WHERE generation_id = ? "
-                        "AND language = 'python' LIMIT 1",
-                        (generation.id,),
-                    ).fetchone()
-                    is not None
-                )
+                structural_coverage = generation.structural_file_count > 0
         except sqlite3.DatabaseError as exc:
             raise RepositoryIndexCorruptError(
                 f"Repository index search failed: {exc}"

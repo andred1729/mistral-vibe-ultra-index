@@ -40,6 +40,7 @@ agents, prompts, logs, and session data live here.
     vibe.log           # Main log file
     session/           # Session log files
   plans/               # Session plans
+  repository-index/    # Passive per-Git-root SQLite indexes (source stays local)
 
 ~/.agents/
   skills/              # Additional user-level skills directory
@@ -734,6 +735,9 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
   are passed to the model for the continuation. Relevant error messages also
   hint at this command.
 - `/status` - Display agent statistics
+- `/index [status|refresh|rebuild|cancel|clear]` - Inspect or recover the passive
+  repository index. Status is the default. Clear removes only the external index
+  database and immediately rebuilds it; repository files are never changed.
 - `/whoami` - Display the Mistral signed-in user, workspace, and plan
 - `/voice` - Configure voice settings
 - `/mcp` - Display MCP servers and connector status; pass a server or connector

@@ -338,6 +338,17 @@ If a model response is interrupted by a backend error, use `/retry` to continue
 from the partial response. Add optional guidance after the command, for example
 `/retry keep the conclusion concise`.
 
+Vibe passively maintains a local repository index for the attached Git root.
+Before every model inference it validates or incrementally rebuilds an atomic
+generation containing text chunks, Python symbols, and dependency edges. The
+model uses the bounded `repo_search` tool for lexical, symbol, dependency, and
+impact queries; source files are not uploaded to build the index.
+
+Use `/index` (or `/index status`) to inspect generation, progress, and language
+coverage. `/index refresh`, `/index rebuild`, `/index cancel`, and `/index clear`
+provide recovery controls. `clear` deletes only Vibe's external index database
+and immediately starts a clean rebuild; it never changes repository files.
+
 ### Custom Slash Commands via Skills
 
 You can define your own slash commands through the skills system. Skills are reusable components that extend Vibe's functionality.

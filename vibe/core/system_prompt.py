@@ -367,7 +367,11 @@ coverage as uncertainty, not proof that there is no downstream impact.
 
 Index generation: {generation.id}
 Indexed roots: {generation.root}
-Indexed files: {generation.file_count}"""
+Indexed files: {generation.file_count}
+Structurally indexed files: {generation.structural_file_count}
+Language-neutral fallback files: {generation.degraded_file_count}
+Parser errors: {generation.parse_error_count}
+Languages: {", ".join(f"{name} ({count})" for name, count in generation.language_counts.items()) or "none"}"""
 
 
 def get_universal_system_prompt(
