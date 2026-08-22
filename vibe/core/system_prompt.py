@@ -355,11 +355,18 @@ def _get_repository_index_section(generation: IndexGeneration) -> str:
 
 A complete repository index was built before this turn.
 
+At the beginning of repository investigation or implementation work, call
+`repo_search` before broad `grep`, file listing, or file reads. Start with an
+`auto` query that describes the user's task to map the likely modules, entry
+points, shared infrastructure, and tests. Refine that map with `symbol` or
+`dependency` queries before opening files. Do not skip this initial mapping just
+because the repository layout looks familiar.
+
 Use `repo_search` as the primary tool for locating symbols and implementations,
 understanding dependencies, finding related tests, estimating change impact, and
-discovering relevant code when the exact text or path is unknown. Use `grep` for
-exact text or regular-expression searches. Use `read_file` before editing files
-returned by the index.
+discovering relevant code. Use `grep` after the initial map for exact text or
+regular-expression searches. Use `read_file` to verify indexed evidence before
+editing a file.
 
 Before a dependency-relevant edit, use `repo_search` in impact mode to inspect
 direct dependents and related tests. Treat incomplete language or reference
