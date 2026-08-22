@@ -31,7 +31,7 @@ async def test_repo_search_reads_the_generation_pinned_by_the_agent_loop(
         results = [
             item
             async for item in tool.invoke(
-                query="HydratedDependencyGraph", mode="symbol", max_results=5
+                query="HydratedDependencyGraph", mode="symbol", limit=5
             )
         ]
 
@@ -71,3 +71,33 @@ async def test_impact_mode_returns_direct_dependents_and_related_tests(
     assert ("pkg/consumer.py", "dependent_via_imports") in relationships
     assert any(path == "tests/test_service.py" for path, _ in relationships)
     assert result.structural_coverage
+
+
+@pytest.mark.asyncio
+async def test_dependency_mode_expands_two_hops_and_path_filters_results(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    (root / "pkg").mkdir(parents=True)
+    (root / "apps").mkdir()
+    Repo.init(root, initial_branch="main")
+    (root / "pkg" / "base.py").write_text(
+        "def shared_api():\n    return 1\n", encoding="utf-8"
+    )
+    (root / "pkg" / "middle.py").write_text(
+        "from pkg.base import shared_api\n", encoding="utf-8"
+    )
+    (root / "apps" / "entry.py").write_text(
+        "from pkg.middle import shared_api\n", encoding="utf-8"
+    )
+    service = RepositoryIndexService(root, tmp_path / "indexes")
+
+    result = await service.search(
+        "shared_api", mode=RepositorySearchMode.DEPENDENCY, path="apps", max_results=20
+    )
+
+    assert {match.path for match in result.matches} == {"apps/entry.py"}
+    assert any(
+        match.relationship.startswith("dependency_distance_")
+        for match in result.matches
+    )

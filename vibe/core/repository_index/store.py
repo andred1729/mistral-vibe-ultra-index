@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from collections.abc import Sequence
 from contextlib import closing
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import sqlite3
 from typing import Any
@@ -21,6 +22,7 @@ from vibe.core.repository_index.models import (
     RepositorySearchMode,
     RepositorySearchResult,
 )
+from vibe.core.repository_index.ranking import rank_repository_matches
 
 _SCHEMA_VERSION = 5
 _GRAPH_SCHEMA_VERSION = 3
@@ -174,6 +176,8 @@ class RepositoryIndexStore:
                     );
                     CREATE INDEX IF NOT EXISTS graph_edges_target_idx
                         ON graph_edges(generation_id, target, kind);
+                    CREATE INDEX IF NOT EXISTS graph_edges_source_idx
+                        ON graph_edges(generation_id, source, kind);
                     CREATE TABLE IF NOT EXISTS file_scores (
                         generation_id INTEGER NOT NULL REFERENCES generations(id),
                         path TEXT NOT NULL,
@@ -600,25 +604,21 @@ class RepositoryIndexStore:
         query: str,
         *,
         mode: RepositorySearchMode = RepositorySearchMode.AUTO,
+        path: str | None = None,
         max_results: int,
     ) -> RepositorySearchResult:
         if max_results < 1 or max_results > _MAX_SEARCH_RESULTS:
             raise ValueError("max_results must be between 1 and 100.")
+        path_prefix = _normalize_path_filter(path)
         match_query = _fts_match_query(query)
         lexical_rows: list[tuple[Any, ...]] = []
-        total_lexical = 0
         try:
             with closing(self._connect(read_only=True)) as connection:
-                if mode in {RepositorySearchMode.AUTO, RepositorySearchMode.TEXT}:
-                    total_lexical = int(
-                        connection.execute(
-                            """
-                            SELECT COUNT(*) FROM chunks_fts
-                            WHERE chunks_fts MATCH ? AND generation_id = ?
-                            """,
-                            (match_query, generation.id),
-                        ).fetchone()[0]
-                    )
+                if mode in {
+                    RepositorySearchMode.AUTO,
+                    RepositorySearchMode.TEXT,
+                    RepositorySearchMode.DEPENDENCY,
+                }:
                     lexical_rows = connection.execute(
                         """
                         SELECT path, line_start, line_end, content,
@@ -628,11 +628,45 @@ class RepositoryIndexStore:
                         ORDER BY bm25(chunks_fts), path, line_start
                         LIMIT ?
                         """,
-                        (match_query, generation.id, max_results),
+                        (match_query, generation.id, _MAX_SEARCH_RESULTS),
                     ).fetchall()
                 structural_rows = _structural_rows(
-                    connection, generation.id, query, mode, max_results
+                    connection, generation.id, query, mode, _MAX_SEARCH_RESULTS
                 )
+                structural_seed_paths = {str(row[0]) for row in structural_rows}
+                seed_paths = (
+                    structural_seed_paths
+                    if mode is RepositorySearchMode.DEPENDENCY and structural_seed_paths
+                    else {str(row[0]) for row in (*lexical_rows, *structural_rows)}
+                )
+                seed_paths.update(
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT path FROM files WHERE generation_id = ? "
+                        "AND path LIKE ? LIMIT 20",
+                        (generation.id, f"%{query}%"),
+                    ).fetchall()
+                )
+                dependency_rows = (
+                    _dependency_rows(
+                        connection,
+                        generation.id,
+                        seed_paths,
+                        max_hops=2,
+                        max_results=_MAX_SEARCH_RESULTS,
+                    )
+                    if mode
+                    in {RepositorySearchMode.AUTO, RepositorySearchMode.DEPENDENCY}
+                    else []
+                )
+                importance = {
+                    str(row[0]): float(row[1])
+                    for row in connection.execute(
+                        "SELECT path, importance FROM file_scores "
+                        "WHERE generation_id = ?",
+                        (generation.id,),
+                    ).fetchall()
+                }
                 structural_coverage = (
                     connection.execute(
                         "SELECT 1 FROM files WHERE generation_id = ? "
@@ -660,6 +694,7 @@ class RepositoryIndexStore:
                 generation=generation.id,
             )
             for row in lexical_rows
+            if mode is not RepositorySearchMode.DEPENDENCY
         )
         structural_matches = tuple(
             RepositorySearchMatch(
@@ -674,14 +709,35 @@ class RepositoryIndexStore:
             )
             for row in structural_rows
         )
-        matches = _deduplicate_matches(
-            (*structural_matches, *lexical_matches), max_results=max_results
+        dependency_matches = tuple(
+            RepositorySearchMatch(
+                root=generation.root,
+                path=str(row[0]),
+                line_start=int(row[1]),
+                line_end=int(row[2]),
+                snippet=str(row[3]),
+                relationship=str(row[4]),
+                score_reason=str(row[5]),
+                generation=generation.id,
+            )
+            for row in dependency_rows
+        )
+        candidates = tuple(
+            match
+            for match in (*structural_matches, *lexical_matches, *dependency_matches)
+            if _matches_path_filter(match.path, path_prefix)
+        )
+        matches = rank_repository_matches(
+            candidates, query=query, importance=importance, max_results=max_results
         )
         return RepositorySearchResult(
             generation=generation,
             query=query,
             mode=mode,
-            total_matches=total_lexical + len(structural_matches),
+            total_matches=len({
+                (match.path, match.line_start, match.relationship)
+                for match in candidates
+            }),
             matches=matches,
             structural_coverage=structural_coverage,
         )
@@ -799,6 +855,23 @@ def _fts_match_query(query: str) -> str:
     return " OR ".join(f'"{term}"' for term in terms)
 
 
+def _normalize_path_filter(path: str | None) -> str | None:
+    if path is None or not path.strip():
+        return None
+    raw = path.strip()
+    if raw.startswith("/") or PureWindowsPath(raw).is_absolute():
+        raise ValueError("Repository search path must be repository-relative.")
+    normalized = raw.replace("\\", "/").strip("/")
+    candidate = PurePosixPath(normalized)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError("Repository search path must be repository-relative.")
+    return candidate.as_posix()
+
+
+def _matches_path_filter(path: str, prefix: str | None) -> bool:
+    return prefix is None or path == prefix or path.startswith(f"{prefix}/")
+
+
 def _score_reason(*, path: str, content: str, query: str) -> str:
     reasons = ["lexical chunk match"]
     if query in path.casefold():
@@ -806,6 +879,85 @@ def _score_reason(*, path: str, content: str, query: str) -> str:
     if query in content.casefold():
         reasons.append("exact phrase")
     return ", ".join(reasons)
+
+
+def _dependency_rows(  # noqa: PLR0914
+    connection: sqlite3.Connection,
+    generation_id: int,
+    seed_paths: set[str],
+    *,
+    max_hops: int,
+    max_results: int,
+) -> list[tuple[Any, ...]]:
+    file_paths = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT path FROM files WHERE generation_id = ?", (generation_id,)
+        ).fetchall()
+    }
+    seeds = seed_paths & file_paths
+    if not seeds:
+        return []
+
+    adjacency: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    rows = connection.execute(
+        "SELECT source, target, kind FROM graph_edges "
+        "WHERE generation_id = ? AND target IS NOT NULL",
+        (generation_id,),
+    ).fetchall()
+    for source_value, target_value, kind_value in rows:
+        source = str(source_value)
+        target = str(target_value)
+        if target.startswith("symbol:"):
+            target = target.removeprefix("symbol:").partition("#")[0]
+        if source not in file_paths or target not in file_paths or source == target:
+            continue
+        kind = str(kind_value)
+        adjacency[source].add((target, kind))
+        adjacency[target].add((source, kind))
+
+    queue = deque((seed, 0) for seed in sorted(seeds))
+    visited = set(seeds)
+    neighbors: list[tuple[str, int, str]] = []
+    while queue and len(neighbors) < max_results:
+        current, depth = queue.popleft()
+        if depth == max_hops:
+            continue
+        for neighbor, kind in sorted(adjacency.get(current, ())):
+            if neighbor in visited:
+                continue
+            visited.add(neighbor)
+            distance = depth + 1
+            neighbors.append((neighbor, distance, kind))
+            queue.append((neighbor, distance))
+            if len(neighbors) == max_results:
+                break
+
+    paths = [path for path, _, _ in neighbors]
+    chunks_by_path: dict[str, tuple[Any, ...]] = {}
+    if paths:
+        placeholders = ",".join("?" for _ in paths)
+        chunk_rows = connection.execute(
+            "SELECT path, line_start, line_end, content FROM chunks_fts "
+            f"WHERE generation_id = ? AND path IN ({placeholders}) "
+            "ORDER BY path, line_start",
+            (generation_id, *paths),
+        ).fetchall()
+        for row in chunk_rows:
+            chunks_by_path.setdefault(str(row[0]), tuple(row[1:]))
+
+    result: list[tuple[Any, ...]] = []
+    for path, distance, kind in neighbors:
+        line_start, line_end, content = chunks_by_path.get(path, (1, 1, path))
+        result.append((
+            path,
+            line_start,
+            line_end,
+            content,
+            f"dependency_distance_{distance}_via_{kind}",
+            f"dependency graph proximity ({distance} hop{'s' if distance > 1 else ''})",
+        ))
+    return result
 
 
 def _structural_rows(
@@ -821,14 +973,11 @@ def _structural_rows(
     definition_rows = connection.execute(
         """
         SELECT f.path, s.line_start, s.line_end,
-               COALESCE(c.content, s.qualified_name),
+               s.qualified_name,
                'defines', 'Python AST symbol definition'
         FROM files AS f
         JOIN symbol_cache AS s
           ON s.content_hash = f.content_hash AND s.language = f.language
-        LEFT JOIN chunks_fts AS c
-          ON c.generation_id = f.generation_id AND c.path = f.path
-         AND c.line_start <= s.line_start AND c.line_end >= s.line_start
         WHERE f.generation_id = ?
           AND (s.name LIKE ? OR s.qualified_name LIKE ?)
         ORDER BY CASE WHEN s.name = ? THEN 0 ELSE 1 END, f.path, s.line_start
@@ -840,14 +989,11 @@ def _structural_rows(
         reference_rows = connection.execute(
             """
             SELECT f.path, r.line, r.line,
-                   COALESCE(c.content, r.name),
+                   r.name,
                    r.kind, 'Python AST reference'
             FROM files AS f
             JOIN reference_cache AS r
               ON r.content_hash = f.content_hash AND r.language = f.language
-            LEFT JOIN chunks_fts AS c
-              ON c.generation_id = f.generation_id AND c.path = f.path
-             AND c.line_start <= r.line AND c.line_end >= r.line
             WHERE f.generation_id = ? AND r.name LIKE ?
             ORDER BY f.path, r.line
             LIMIT ?
@@ -859,14 +1005,11 @@ def _structural_rows(
     definition_rows = connection.execute(
         """
         SELECT f.path, s.line_start, s.line_end,
-               COALESCE(c.content, s.qualified_name),
+               s.qualified_name,
                'defines', 'exact Python AST symbol definition'
         FROM files AS f
         JOIN symbol_cache AS s
           ON s.content_hash = f.content_hash AND s.language = f.language
-        LEFT JOIN chunks_fts AS c
-          ON c.generation_id = f.generation_id AND c.path = f.path
-         AND c.line_start <= s.line_start AND c.line_end >= s.line_start
         WHERE f.generation_id = ? AND (s.name = ? OR s.qualified_name = ?)
         ORDER BY f.path, s.line_start
         LIMIT ?
@@ -890,14 +1033,10 @@ def _structural_rows(
             connection.execute(
                 """
                 SELECT e.source, COALESCE(e.line, 1), COALESCE(e.line, 1),
-                       COALESCE(c.content, e.evidence, e.source),
+                       COALESCE(e.evidence, e.source),
                        'dependent_via_' || e.kind,
                        'direct dependency graph edge'
                 FROM graph_edges AS e
-                LEFT JOIN chunks_fts AS c
-                  ON c.generation_id = e.generation_id AND c.path = e.source
-                 AND c.line_start <= COALESCE(e.line, 1)
-                 AND c.line_end >= COALESCE(e.line, 1)
                 WHERE e.generation_id = ? AND e.source != ?
                   AND (e.target = ? OR e.target LIKE ?)
                   AND e.kind IN ('imports', 'references', 'calls', 'inherits')
@@ -916,12 +1055,9 @@ def _structural_rows(
         impact_rows.extend(
             connection.execute(
                 """
-                SELECT e.target, 1, 1, COALESCE(c.content, e.target),
+                SELECT e.target, 1, 1, e.target,
                        'tested_by', 'test relationship from dependency graph'
                 FROM graph_edges AS e
-                LEFT JOIN chunks_fts AS c
-                  ON c.generation_id = e.generation_id AND c.path = e.target
-                 AND c.line_start <= 1 AND c.line_end >= 1
                 WHERE e.generation_id = ? AND e.source = ?
                   AND e.kind = 'tested_by' AND e.target IS NOT NULL
                 ORDER BY e.target
@@ -931,19 +1067,3 @@ def _structural_rows(
             ).fetchall()
         )
     return impact_rows[:max_results]
-
-
-def _deduplicate_matches(
-    matches: tuple[RepositorySearchMatch, ...], *, max_results: int
-) -> tuple[RepositorySearchMatch, ...]:
-    deduplicated: list[RepositorySearchMatch] = []
-    seen: set[tuple[str, int, str]] = set()
-    for match in matches:
-        key = (match.path, match.line_start, match.relationship)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduplicated.append(match)
-        if len(deduplicated) == max_results:
-            break
-    return tuple(deduplicated)

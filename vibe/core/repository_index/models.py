@@ -81,6 +81,7 @@ class RepositorySearchMode(StrEnum):
     AUTO = auto()
     TEXT = auto()
     SYMBOL = auto()
+    DEPENDENCY = auto()
     IMPACT = auto()
 
 
@@ -184,6 +185,7 @@ class RepositorySearchMatch(BaseModel):
     path: str
     line_start: int
     line_end: int
+    symbol: str | None = None
     snippet: str
     relationship: str = "text_match"
     score_reason: str

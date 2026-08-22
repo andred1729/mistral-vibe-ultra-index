@@ -22,6 +22,7 @@ class RepositoryIndexReader(Protocol):
         query: str,
         *,
         mode: RepositorySearchMode = RepositorySearchMode.AUTO,
+        path: str | None = None,
         max_results: int = 20,
     ) -> RepositorySearchResult: ...
 

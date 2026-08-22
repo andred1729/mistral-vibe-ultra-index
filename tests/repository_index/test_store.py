@@ -117,3 +117,48 @@ def test_search_returns_source_cited_chunks_from_selected_generation(
     assert result.matches[0].line_start == 10
     assert result.matches[0].generation == first.id
     assert "PassiveIndex" in result.matches[0].snippet
+
+
+def test_search_rejects_absolute_or_parent_path_filters(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    generation = store.publish(
+        root,
+        [_file("module.py")],
+        [
+            IndexChunk(
+                path="module.py", ordinal=0, line_start=1, line_end=1, content="needle"
+            )
+        ],
+    )
+
+    for path in ("/tmp", "../secret", r"C:\secret"):
+        with pytest.raises(ValueError, match="repository-relative"):
+            store.search(generation, "needle", path=path, max_results=10)
+
+
+def test_search_caps_total_result_bytes(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    files = [_file(f"file_{index}.py") for index in range(100)]
+    chunks = [
+        IndexChunk(
+            path=file.path,
+            ordinal=0,
+            line_start=1,
+            line_end=1,
+            content=f"needle {'x' * 7_900}",
+        )
+        for file in files
+    ]
+    generation = store.publish(root, files, chunks)
+
+    result = store.search(generation, "needle", max_results=100)
+
+    encoded_matches = sum(
+        len(match.model_dump_json().encode("utf-8")) for match in result.matches
+    )
+    assert encoded_matches <= 48_000
+    assert len(result.matches) < 100

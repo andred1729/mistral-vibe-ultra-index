@@ -346,16 +346,17 @@ class RepositoryIndexService:
         query: str,
         *,
         mode: RepositorySearchMode = RepositorySearchMode.AUTO,
+        path: str | None = None,
         max_results: int = 20,
     ) -> RepositorySearchResult:
         generation = self.pinned_generation()
         if generation is None:
             async with self.inference_scope() as pinned:
                 return await self._search_generation(
-                    pinned, query, mode=mode, max_results=max_results
+                    pinned, query, mode=mode, path=path, max_results=max_results
                 )
         return await self._search_generation(
-            generation, query, mode=mode, max_results=max_results
+            generation, query, mode=mode, path=path, max_results=max_results
         )
 
     def cancel(self) -> None:
@@ -410,6 +411,7 @@ class RepositoryIndexService:
         query: str,
         *,
         mode: RepositorySearchMode,
+        path: str | None,
         max_results: int,
     ) -> RepositorySearchResult:
         if self._store is None:
@@ -422,6 +424,7 @@ class RepositoryIndexService:
                 generation,
                 query,
                 mode=mode,
+                path=path,
                 max_results=max_results,
             )
         except Exception as exc:

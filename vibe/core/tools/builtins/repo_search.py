@@ -28,10 +28,15 @@ class RepoSearchArgs(BaseModel):
         default=RepositorySearchMode.AUTO,
         description=(
             "auto for general retrieval, text for lexical evidence, symbol for "
-            "definitions/references, or impact for dependents and related tests."
+            "definitions/references, dependency for graph neighbors, or impact "
+            "for dependents and related tests."
         ),
     )
-    max_results: int = Field(default=20, ge=1, le=100)
+    path: str | None = Field(
+        default=None,
+        description="Optional repository-relative path or directory prefix.",
+    )
+    limit: int = Field(default=20, ge=1, le=100)
 
 
 class RepoSearchConfig(BaseToolConfig):
@@ -47,6 +52,6 @@ class RepoSearch(
         if self.repository_index is None:
             raise ToolError("The repository index is unavailable for this session.")
         result = await self.repository_index.search(
-            args.query, mode=args.mode, max_results=args.max_results
+            args.query, mode=args.mode, path=args.path, max_results=args.limit
         )
         yield result
