@@ -361,11 +361,14 @@ of the repository. Use it to find a plausible locus, then verify the relevant
 code with `read_file` or refine a known name with `symbol`. Do not expand broad
 dependency trees before identifying a likely function, symbol, or file.
 
-After locating a likely function or symbol, use `impact` to find its direct
-callers or consumers, related tests, and what an edit could break. Use
-`dependency` with `direction=dependencies` when you need to know what the locus
-calls or requires, `direction=dependents` for incoming callers and consumers,
-or `direction=both` only when you need a bounded neighborhood in both directions.
+Once you identify a likely named function, symbol, or file, your next
+repository-navigation action should be `repo_search` in `impact` mode to find
+direct callers or consumers, related tests, and what an edit could break. Use
+`dependency` instead when the next question is specifically what the locus
+requires (`direction=dependencies`), what depends on it (`direction=dependents`),
+or both (`direction=both`). Do this graph step before returning to broad
+`grep`/`find`. Do not manually trace callers, imports, or consumers with broad
+shell searches when these graph modes can answer the question.
 
 Use `repo_search` as the primary tool for locating symbols and implementations,
 understanding dependencies, finding related tests, estimating change impact, and

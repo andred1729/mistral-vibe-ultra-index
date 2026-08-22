@@ -18,6 +18,9 @@ _MAX_SNIPPET_BYTES = 3_000
 _SHARED_COMPONENT_THRESHOLD = 2
 _MAX_QUERY_SUGGESTIONS = 3
 _MAX_MATCHES_PER_PATH = 3
+_PYTHON_DEFINITION_PATTERN = re.compile(
+    r"^[ \t]*(?:async[ \t]+)?(?:class|def)[ \t]+([^\W\d]\w*)", flags=re.MULTILINE
+)
 _QUERY_CONCEPT_EXPANSIONS: dict[str, tuple[str, ...]] = {
     "squash": ("optimizer", "reduce"),
     "squashed": ("optimizer", "reduce"),
@@ -163,14 +166,37 @@ def suggest_repository_queries(
             for term in _query_terms(query)[:_MAX_QUERY_SUGGESTIONS]
         )
 
-    if definition := next(
+    concrete_definition = next(
         (
-            match
+            definition
             for match in matches
-            if match.relationship == "defines"
-            and match.module_role is not RepositoryModuleRole.TEST
+            if _is_likely_production_match(match)
+            if (definition := _snippet_definition(match)) is not None
         ),
         None,
+    )
+    if concrete_definition is not None:
+        definition, path, line = concrete_definition
+        suggestions.append(
+            RepositoryQuerySuggestion(
+                query=definition,
+                mode=RepositorySearchMode.IMPACT,
+                reason=(
+                    f"Open {path}:{line} first, then inspect its callers, consumers, "
+                    "related tests, and what could break."
+                ),
+            )
+        )
+    elif mode is not RepositorySearchMode.AUTO and (
+        definition := next(
+            (
+                match
+                for match in matches
+                if match.relationship == "defines"
+                and match.module_role is not RepositoryModuleRole.TEST
+            ),
+            None,
+        )
     ):
         suggestions.append(
             RepositoryQuerySuggestion(
@@ -180,7 +206,9 @@ def suggest_repository_queries(
             )
         )
 
-    if refinement := _refinement_mode(mode):
+    if (refinement := _refinement_mode(mode)) and not (
+        mode is RepositorySearchMode.AUTO and concrete_definition is not None
+    ):
         suggestions.append(
             RepositoryQuerySuggestion(
                 query=query,
@@ -208,6 +236,21 @@ def suggest_repository_queries(
             (suggestion.query, suggestion.mode, suggestion.path), suggestion
         )
     return tuple(unique.values())[:_MAX_QUERY_SUGGESTIONS]
+
+
+def _snippet_definition(match: RepositorySearchMatch) -> tuple[str, str, int] | None:
+    definition = _PYTHON_DEFINITION_PATTERN.search(match.snippet)
+    if definition is None:
+        return None
+    line = match.line_start + match.snippet.count("\n", 0, definition.start())
+    return definition.group(1), match.path, line
+
+
+def _is_likely_production_match(match: RepositorySearchMatch) -> bool:
+    return (
+        match.module_role is not RepositoryModuleRole.TEST
+        and _result_path_rank(match.path) == 0
+    )
 
 
 def _query_terms(query: str) -> tuple[str, ...]:

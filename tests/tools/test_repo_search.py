@@ -28,7 +28,8 @@ def test_repo_search_arguments_guide_staged_graph_queries() -> None:
     assert "incoming callers and consumers" in parameters["direction"]["description"]
     assert "bounded two-way neighborhood" in parameters["direction"]["description"]
     assert "not as an exhaustive repository map" in tool_guidance
-    assert "Once you find a plausible function or symbol" in tool_guidance
+    assert "Once you identify a likely named function" in tool_guidance
+    assert "before returning to broad `grep`/`find`" in tool_guidance
     assert "Do not request broad dependency trees" in tool_guidance
 
 

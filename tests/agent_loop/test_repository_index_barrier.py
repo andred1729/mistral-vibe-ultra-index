@@ -88,12 +88,18 @@ async def test_model_turn_runs_inside_pinned_index_scope_and_refreshes_prompt(
         assert "Continue using `repo_search`" in system_prompt
         assert "An `auto`\nquery is a compact locator" in system_prompt
         assert "not an exhaustive map" in system_prompt
-        assert (
-            "After locating a likely function or symbol, use `impact`" in system_prompt
+        assert "Once you identify a likely named function" in system_prompt
+        assert "your next\nrepository-navigation action should be `repo_search`" in (
+            system_prompt
         )
+        assert "in `impact` mode" in system_prompt
         assert "related tests, and what an edit could break" in system_prompt
         assert "`direction=dependencies`" in system_prompt
         assert "`direction=dependents`" in system_prompt
+        assert "Do this graph step before returning to broad\n`grep`/`find`" in (
+            system_prompt
+        )
+        assert "Do not manually trace callers, imports, or consumers" in system_prompt
         assert (
             "Do not expand broad\ndependency trees before identifying" in system_prompt
         )

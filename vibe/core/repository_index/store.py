@@ -42,9 +42,9 @@ _STRUCTURED_SEARCH_SCHEMA_VERSION = 4
 _CONTENT_FACT_SCHEMA_VERSION = 5
 _MAX_SEARCH_RESULTS = 100
 _MAX_SEARCH_CANDIDATES = 500
-_MAX_AUTO_RESULTS = 8
+_MAX_AUTO_RESULTS = 5
 _MAX_AUTO_MATCHES_PER_PATH = 1
-_MAX_AUTO_SNIPPET_BYTES = 800
+_MAX_AUTO_SNIPPET_BYTES = 400
 _MAX_IMPACT_DEFINITIONS = 5
 _MAX_MAP_FILES = 200
 _MAX_MAP_SYMBOLS_PER_FILE = 20
@@ -869,7 +869,7 @@ class RepositoryIndexStore:
                 for match in candidates
             }),
             matches=matches,
-            groups=groups,
+            groups=() if mode is RepositorySearchMode.AUTO else groups,
             suggestions=suggest_repository_queries(
                 query=query, mode=mode, matches=matches, groups=groups
             ),

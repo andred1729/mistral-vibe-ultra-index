@@ -15,6 +15,7 @@ from vibe.core.repository_index.models import (
     RepositoryDependencyDirection,
     RepositorySearchMode,
 )
+from vibe.core.repository_index.parsers.python import parse_python_facts
 from vibe.core.repository_index.store import (
     RepositoryIndexCorruptError,
     RepositoryIndexStore,
@@ -253,9 +254,49 @@ def test_auto_search_expands_identifier_concepts_and_prioritizes_coverage(
     )
 
     assert result.matches[0].path == "compiler.py"
-    assert len(result.matches) <= 8
+    assert len(result.matches) <= 5
     assert len({match.path for match in result.matches}) == len(result.matches)
+    assert all(len(match.snippet.encode("utf-8")) <= 400 for match in result.matches)
+    assert result.groups == ()
     assert result.dependency_trees == ()
+
+
+def test_auto_search_suggests_anchored_impact_for_definition(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    path = "pkg/optimizer.py"
+    source = "\n" * 39 + "def optimize_migrations():\n    return 'squash migrations'\n"
+    generation = store.publish(
+        root,
+        [_file(path, "optimizer")],
+        [
+            IndexChunk(
+                path=path,
+                ordinal=0,
+                line_start=40,
+                line_end=41,
+                content="def optimize_migrations():\n    return 'squash migrations'",
+            )
+        ],
+        facts=[parse_python_facts(path, "optimizer", source)],
+    )
+
+    result = store.search(generation, "squash migrations", max_results=20)
+
+    impact = next(
+        suggestion
+        for suggestion in result.suggestions
+        if suggestion.mode is RepositorySearchMode.IMPACT
+    )
+    assert impact.query == "optimize_migrations"
+    assert "Open pkg/optimizer.py:40 first" in impact.reason
+    assert "what could break" in impact.reason
+    assert all(
+        suggestion.mode is not RepositorySearchMode.DEPENDENCY
+        or suggestion.query != "squash migrations"
+        for suggestion in result.suggestions
+    )
 
 
 def test_auto_search_ranks_source_from_beyond_initial_fts_window(
@@ -400,7 +441,9 @@ def test_search_rejects_absolute_or_parent_path_filters(tmp_path: Path) -> None:
             store.search(generation, "needle", path=path, max_results=10)
 
 
-def test_search_caps_total_result_bytes(tmp_path: Path) -> None:
+def test_auto_search_uses_compact_bounds_without_changing_text_mode(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "repository"
     root.mkdir()
     store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
@@ -417,10 +460,18 @@ def test_search_caps_total_result_bytes(tmp_path: Path) -> None:
     ]
     generation = store.publish(root, files, chunks)
 
-    result = store.search(generation, "needle", max_results=100)
+    automatic = store.search(generation, "needle", max_results=100)
+    text = store.search(
+        generation, "needle", mode=RepositorySearchMode.TEXT, max_results=10
+    )
 
     encoded_matches = sum(
-        len(match.model_dump_json().encode("utf-8")) for match in result.matches
+        len(match.model_dump_json().encode("utf-8")) for match in automatic.matches
     )
     assert encoded_matches <= 48_000
-    assert len(result.matches) < 100
+    assert len(automatic.matches) == 5
+    assert all(len(match.snippet.encode("utf-8")) <= 400 for match in automatic.matches)
+    assert automatic.groups == ()
+    assert len(text.matches) == 10
+    assert all(len(match.snippet.encode("utf-8")) > 400 for match in text.matches)
+    assert text.groups
