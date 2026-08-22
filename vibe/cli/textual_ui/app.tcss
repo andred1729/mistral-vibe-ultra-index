@@ -886,7 +886,7 @@ StatusMessage {
 }
 
 .repo-search .status-indicator-text {
-    color: $primary;
+    color: $success;
     text-style: bold;
 }
 

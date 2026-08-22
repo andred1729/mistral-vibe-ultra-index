@@ -51,7 +51,7 @@ def test_generic_tool_result_preserves_multiline_fields() -> None:
     )
 
 
-def test_repo_search_tool_messages_receive_purple_style_class() -> None:
+def test_repo_search_tool_messages_receive_neon_green_style_class() -> None:
     entry = PublicEffectEntry(
         id="call-1",
         session_id="session-1",
