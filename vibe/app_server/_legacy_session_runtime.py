@@ -255,6 +255,7 @@ class LegacySessionRuntimeController:
             self._account_gateway,
             current_event_id=self._services.event_watermark,
             identity_gateway=self._identity_gateway,
+            track_background_task=self._track_task,
         )
         coordinator = RootSessionCoordinator(
             agent_loop,

@@ -13,11 +13,15 @@ from vibe.core.repository_index.chunks import (
     RepositoryChangedDuringBuildError,
     build_text_chunks,
 )
-from vibe.core.repository_index.discovery import RepositoryDiscovery
+from vibe.core.repository_index.discovery import (
+    DiscoveryCancelledError,
+    RepositoryDiscovery,
+)
 from vibe.core.repository_index.facts import build_file_facts
 from vibe.core.repository_index.graph import hydrate_dependency_graph
 from vibe.core.repository_index.models import (
     IndexGeneration,
+    IndexPhase,
     IndexStatus,
     RepositoryIndexState,
     RepositorySearchMode,
@@ -67,10 +71,16 @@ class RepositoryIndexService:
     async def ensure_ready(self) -> IndexGeneration:  # noqa: PLR0914, PLR0915
         if self._closed:
             raise RepositoryIndexUnavailableError("Repository index service is closed.")
-        async with self._build_lock:
+        async with self._build_lock:  # noqa: PLR1702
             self._cancel_event = Event()
             self._state = self._state.model_copy(
-                update={"status": IndexStatus.BUILDING, "error": None}
+                update={
+                    "status": IndexStatus.BUILDING,
+                    "phase": IndexPhase.DISCOVERING,
+                    "files_processed": 0,
+                    "files_total": 0,
+                    "error": None,
+                }
             )
             try:
                 result = None
@@ -84,6 +94,9 @@ class RepositoryIndexService:
                         self._discovery.discover,
                         self._cwd,
                         cancel_event=self._cancel_event,
+                    )
+                    self._set_progress(
+                        IndexPhase.CHUNKING, processed=0, total=len(result.files)
                     )
                     store = self._store_for(result.root)
                     current = await asyncio.to_thread(
@@ -105,7 +118,10 @@ class RepositoryIndexService:
                                 root=result.root,
                                 generation=current,
                                 status=IndexStatus.COMPLETE,
+                                phase=IndexPhase.IDLE,
                                 dirty=False,
+                                files_processed=len(result.files),
+                                files_total=len(result.files),
                             )
                             return current
                     analysis_reusable = (
@@ -138,6 +154,11 @@ class RepositoryIndexService:
                             changed_files,
                             cancel_event=self._cancel_event,
                         )
+                        self._set_progress(
+                            IndexPhase.PARSING,
+                            processed=len(changed_files),
+                            total=len(result.files),
+                        )
                         cached = await asyncio.to_thread(
                             store.cached_facts, result.files
                         )
@@ -165,6 +186,11 @@ class RepositoryIndexService:
                             if current is not None
                             else ()
                         )
+                        self._set_progress(
+                            IndexPhase.GRAPH,
+                            processed=len(result.files),
+                            total=len(result.files),
+                        )
                         graph = await asyncio.to_thread(
                             hydrate_dependency_graph,
                             result.files,
@@ -175,7 +201,25 @@ class RepositoryIndexService:
                                 else None
                             ),
                             previous_scores=previous_scores,
+                            cancel_event=self._cancel_event,
                         )
+                        validated = await asyncio.to_thread(
+                            self._discovery.discover,
+                            self._cwd,
+                            cancel_event=self._cancel_event,
+                        )
+                        if (
+                            validated.root != result.root
+                            or validated.files != result.files
+                        ):
+                            if attempt == _BUILD_ATTEMPTS - 1:
+                                raise RepositoryChangedDuringBuildError(
+                                    "Repository kept changing while the index was built."
+                                )
+                            self._set_progress(
+                                IndexPhase.DISCOVERING, processed=0, total=0
+                            )
+                            continue
                         break
                     except RepositoryChangedDuringBuildError:
                         if attempt == _BUILD_ATTEMPTS - 1:
@@ -187,6 +231,11 @@ class RepositoryIndexService:
                         "Repository index build produced no snapshot."
                     )
                 store = self._store_for(result.root)
+                self._set_progress(
+                    IndexPhase.PUBLISHING,
+                    processed=len(result.files),
+                    total=len(result.files),
+                )
                 generation = await asyncio.to_thread(
                     store.publish,
                     result.root,
@@ -202,15 +251,40 @@ class RepositoryIndexService:
                     root=result.root,
                     generation=generation,
                     status=IndexStatus.COMPLETE,
+                    phase=IndexPhase.IDLE,
                     dirty=False,
+                    files_processed=len(result.files),
+                    files_total=len(result.files),
                 )
                 return generation
             except asyncio.CancelledError:
                 self._cancel_event.set()
+                self._state = self._state.model_copy(
+                    update={
+                        "status": IndexStatus.CANCELLED,
+                        "phase": IndexPhase.IDLE,
+                        "dirty": True,
+                        "error": "Repository indexing was cancelled.",
+                    }
+                )
                 raise
+            except DiscoveryCancelledError as e:
+                self._state = self._state.model_copy(
+                    update={
+                        "status": IndexStatus.CANCELLED,
+                        "phase": IndexPhase.IDLE,
+                        "dirty": True,
+                        "error": str(e),
+                    }
+                )
+                raise RepositoryIndexUnavailableError(str(e)) from e
             except Exception as e:
                 self._state = self._state.model_copy(
-                    update={"status": IndexStatus.FAILED, "error": str(e)}
+                    update={
+                        "status": IndexStatus.FAILED,
+                        "phase": IndexPhase.IDLE,
+                        "error": str(e),
+                    }
                 )
                 raise RepositoryIndexUnavailableError(
                     f"Repository index is unavailable: {e}"
@@ -225,7 +299,11 @@ class RepositoryIndexService:
             if not changes or self._closed:
                 continue
             self._state = self._state.model_copy(update={"dirty": True})
-            await self.ensure_ready()
+            try:
+                await self.ensure_ready()
+            except RepositoryIndexUnavailableError:
+                if self._state.status is not IndexStatus.CANCELLED:
+                    raise
 
     @asynccontextmanager
     async def pin_generation(self) -> AsyncIterator[IndexGeneration]:
@@ -290,6 +368,9 @@ class RepositoryIndexService:
     async def clear(self) -> None:
         self.cancel()
         async with self._build_lock:
+            self._state = self._state.model_copy(
+                update={"status": IndexStatus.BUILDING, "phase": IndexPhase.CLEARING}
+            )
             if self._store is not None:
                 await asyncio.to_thread(self._store.clear)
             self._state = RepositoryIndexState(root=self._root)
@@ -307,6 +388,11 @@ class RepositoryIndexService:
         path = self._storage_root / repository_identity(root) / "index.sqlite3"
         self._store = RepositoryIndexStore(path)
         return self._store
+
+    def _set_progress(self, phase: IndexPhase, *, processed: int, total: int) -> None:
+        self._state = self._state.model_copy(
+            update={"phase": phase, "files_processed": processed, "files_total": total}
+        )
 
     async def _prune(self, store: RepositoryIndexStore, root: Path) -> None:
         async with self._pin_lock:

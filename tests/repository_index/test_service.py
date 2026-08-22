@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from threading import Event
 
 from git import Repo
 import pytest
 
+from vibe.core.repository_index.discovery import (
+    DiscoveryCancelledError,
+    RepositoryDiscovery,
+)
+from vibe.core.repository_index.models import IndexStatus
 from vibe.core.repository_index.service import (
     RepositoryIndexService,
     RepositoryIndexUnavailableError,
@@ -128,3 +135,60 @@ async def test_corrupt_published_store_blocks_barrier_with_diagnostic(
     corrupt_service = RepositoryIndexService(root, storage)
     with pytest.raises(RepositoryIndexUnavailableError, match="corrupt"):
         await corrupt_service.ensure_ready()
+
+
+@pytest.mark.asyncio
+async def test_cancel_interrupts_background_discovery(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    Repo.init(root, initial_branch="main")
+    started = Event()
+
+    class BlockingDiscovery(RepositoryDiscovery):
+        def discover(self, cwd, *, cancel_event=None, on_file=None):
+            started.set()
+            assert cancel_event is not None
+            cancel_event.wait()
+            raise DiscoveryCancelledError("cancelled by test")
+
+    service = RepositoryIndexService(
+        root, tmp_path / "indexes", discovery=BlockingDiscovery()
+    )
+    build = asyncio.create_task(service.ensure_ready())
+    await asyncio.to_thread(started.wait)
+
+    service.cancel()
+
+    with pytest.raises(RepositoryIndexUnavailableError, match="cancelled by test"):
+        await build
+    assert service.state.status is IndexStatus.CANCELLED
+    assert service.state.dirty
+
+
+@pytest.mark.asyncio
+async def test_revalidates_repository_after_graph_hydration(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    Repo.init(root, initial_branch="main")
+    module = root / "module.py"
+    module.write_text("value = 1\n", encoding="utf-8")
+    discovery = RepositoryDiscovery()
+
+    class ChangingDiscovery(RepositoryDiscovery):
+        calls = 0
+
+        def discover(self, cwd, *, cancel_event=None, on_file=None):
+            self.calls += 1
+            if self.calls == 2:
+                module.write_text("value = 2\n", encoding="utf-8")
+            return discovery.discover(cwd, cancel_event=cancel_event, on_file=on_file)
+
+    service = RepositoryIndexService(
+        root, tmp_path / "indexes", discovery=ChangingDiscovery()
+    )
+
+    generation = await service.ensure_ready()
+    result = await service.search("value = 2")
+
+    assert generation.id == 1
+    assert result.total_matches == 1

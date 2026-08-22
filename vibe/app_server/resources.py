@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from vibe.app_server._integration_resources import MCPResource, VibeCodeResource
+from vibe.app_server._repository_index_resources import RepositoryIndexResource
 from vibe.app_server._runtime_resources import (
     AccountResource,
     AgentResource,
@@ -47,6 +48,7 @@ class AppServerResources:
         self.narration = NarrationResource(connection, state)
         self.feedback = FeedbackResource(connection, state)
         self.vibe_code = VibeCodeResource(connection, state)
+        self.repository_index = RepositoryIndexResource(connection, state)
 
     async def refresh(self) -> None:
         await self.runtime.refresh()
@@ -57,6 +59,8 @@ class AppServerResources:
             self.config.publish_change(previous_config)
             return True
         if await self.mcp.consume_notification(notification):
+            return True
+        if await self.repository_index.consume_notification(notification):
             return True
         return await self.vibe_code.consume_notification(notification)
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections import defaultdict
 import hashlib
 from pathlib import PurePosixPath
+from threading import Event
 
+from vibe.core.repository_index.discovery import DiscoveryCancelledError
 from vibe.core.repository_index.models import (
     DiscoveredFile,
     FileFacts,
@@ -25,6 +27,7 @@ def hydrate_dependency_graph(  # noqa: PLR0914
     *,
     previous_fingerprint: str | None = None,
     previous_scores: tuple[FileGraphScore, ...] = (),
+    cancel_event: Event | None = None,
 ) -> HydratedGraph:
     file_paths = {file.path for file in files}
     module_paths = _python_module_paths(file_paths)
@@ -32,6 +35,7 @@ def hydrate_dependency_graph(  # noqa: PLR0914
     edges: list[GraphEdge] = []
 
     for fact in facts:
+        _raise_if_cancelled(cancel_event)
         edges.append(
             GraphEdge(source="root", target=fact.path, kind=GraphEdgeKind.CONTAINS)
         )
@@ -49,6 +53,7 @@ def hydrate_dependency_graph(  # noqa: PLR0914
             )
 
     for fact in facts:
+        _raise_if_cancelled(cancel_event)
         for imported in fact.imports:
             target = _resolve_import(fact.path, imported, module_paths)
             evidence = _import_evidence(imported)
@@ -89,6 +94,7 @@ def hydrate_dependency_graph(  # noqa: PLR0914
         and edge.target in file_paths
     ]
     for edge in import_edges:
+        _raise_if_cancelled(cancel_event)
         imported_path = edge.target
         if imported_path is None:  # pragma: no cover - narrowed above
             continue
@@ -124,6 +130,11 @@ def hydrate_dependency_graph(  # noqa: PLR0914
     return HydratedGraph(
         edges=deduplicated, scores=scores, topology_fingerprint=fingerprint
     )
+
+
+def _raise_if_cancelled(cancel_event: Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise DiscoveryCancelledError("Repository graph hydration was cancelled.")
 
 
 def _python_module_paths(paths: set[str]) -> dict[str, str]:

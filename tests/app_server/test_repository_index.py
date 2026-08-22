@@ -6,6 +6,7 @@ from pathlib import Path
 from git import Repo
 import pytest
 
+from vibe.app_server._repository_index import RepositoryIndexController
 import vibe.app_server._runtime as runtime
 from vibe.app_server.protocol import ClientInfo, SessionOptions
 from vibe.core.config.harness_files import HarnessFilesManager
@@ -65,3 +66,33 @@ async def test_harness_process_starts_and_stops_repository_watcher(
 
     assert watcher.done()
     assert service._closed
+
+
+@pytest.mark.asyncio
+async def test_controller_starts_background_refresh_and_projects_state(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    Repo.init(root, initial_branch="main")
+    (root / "module.py").write_text("value = 1\n", encoding="utf-8")
+    service = RepositoryIndexService(root, tmp_path / "index")
+    tasks: list[asyncio.Task[None]] = []
+    notifications = []
+
+    async def notify(method, payload):
+        notifications.append((method, payload))
+
+    controller = RepositoryIndexController(service, "session", notify, tasks.append)
+
+    response = await controller.refresh()
+    assert response.started
+    assert response.index.status == "building"
+
+    await tasks[0]
+
+    status = controller.status().index
+    assert status.status == "complete"
+    assert status.generation == 1
+    assert status.file_count == 1
+    assert notifications[0][0] == "repositoryIndex/updated"

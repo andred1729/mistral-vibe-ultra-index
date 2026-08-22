@@ -10,13 +10,17 @@ from vibe.core.repository_index.models import (
     DiscoveryResult,
     IndexChunk,
     IndexGeneration,
+    IndexPhase,
     IndexStatus,
     RepositoryIndexState,
     RepositorySearchMatch,
     RepositorySearchMode,
     RepositorySearchResult,
 )
-from vibe.core.repository_index.ports import RepositoryIndexReader
+from vibe.core.repository_index.ports import (
+    RepositoryIndexLifecycle,
+    RepositoryIndexReader,
+)
 from vibe.core.repository_index.service import (
     RepositoryIndexService,
     RepositoryIndexUnavailableError,
@@ -33,10 +37,12 @@ __all__ = [
     "DiscoveryResult",
     "IndexChunk",
     "IndexGeneration",
+    "IndexPhase",
     "IndexStatus",
     "RepositoryChangedDuringBuildError",
     "RepositoryDiscovery",
     "RepositoryIndexCorruptError",
+    "RepositoryIndexLifecycle",
     "RepositoryIndexReader",
     "RepositoryIndexService",
     "RepositoryIndexState",

@@ -31,6 +31,7 @@ from vibe.app_server._projection import (
     project_stats,
     project_tools,
 )
+from vibe.app_server._repository_index import RepositoryIndexController
 from vibe.app_server.config import ProxySettingsView
 from vibe.app_server.models import AccountView, IdentityView, MCPState, ScheduledLoop
 from vibe.app_server.protocol import (
@@ -99,6 +100,7 @@ from vibe.app_server.protocol import (
     ToolsListParams,
     ToolsListResponse,
 )
+from vibe.app_server.repository_index import RepositoryIndexParams
 from vibe.core.agent_loop import AgentLoop
 from vibe.core.config.admin_config import (
     MANAGED_CONFIG_TIMEOUT,
@@ -126,6 +128,7 @@ from vibe.core.proxy_setup import (
     set_proxy_var,
     unset_proxy_var,
 )
+from vibe.core.repository_index import RepositoryIndexLifecycle
 from vibe.core.tools.mcp_settings import persist_mcp_toggle
 from vibe.core.types import Role, ScheduledLoop as CoreScheduledLoop
 from vibe.observability.logging import logger
@@ -147,6 +150,7 @@ class ResourceRequestHandler:
         account_gateway: AccountGateway | None = None,
         current_event_id: Callable[[str], int] | None = None,
         identity_gateway: IdentityGateway | None = None,
+        track_background_task: Callable[[asyncio.Task[None]], None] | None = None,
     ) -> None:
         self._agent_loop = agent_loop
         self._execution = execution
@@ -157,6 +161,12 @@ class ResourceRequestHandler:
         self._loops = LoopManager(agent_loop.session_logger)
         self._logs = LogReader()
         self._narration = NarrationService(agent_loop)
+        self._repository_index = RepositoryIndexController(
+            cast("RepositoryIndexLifecycle | None", agent_loop.repository_index),
+            agent_loop.session_id,
+            notify,
+            track_background_task,
+        )
         self._mcp_discovery_errors: dict[str, str] = {}
         self.restore_loops()
 
@@ -183,11 +193,36 @@ class ResourceRequestHandler:
                 result = await self._dispatch_loops(method, raw_params)
             case "narration":
                 result = await self._dispatch_narration(method, raw_params)
+            case "repositoryIndex":
+                result = await self._dispatch_repository_index(method, raw_params)
             case "telemetry" | "feedback":
                 result = self._dispatch_client_event(method, raw_params)
             case _:
                 raise method_not_found(method)
         return result
+
+    async def _dispatch_repository_index(
+        self, method: str, raw_params: dict[str, Any]
+    ) -> DispatchResult:
+        params = validate_wire(RepositoryIndexParams, raw_params)
+        self._require_session(params.session_id)
+        match method:
+            case "repositoryIndex/status":
+                response: ProtocolModel = self._repository_index.status()
+            case "repositoryIndex/refresh":
+                self._execution.require_idle()
+                response = await self._repository_index.refresh()
+            case "repositoryIndex/rebuild":
+                self._execution.require_idle()
+                response = await self._repository_index.rebuild()
+            case "repositoryIndex/clear":
+                self._execution.require_idle()
+                response = await self._repository_index.clear()
+            case "repositoryIndex/cancel":
+                response = self._repository_index.cancel()
+            case _:
+                raise method_not_found(method)
+        return DispatchResult(response)
 
     def _dispatch_runtime(
         self, method: str, raw_params: dict[str, Any]

@@ -9,7 +9,18 @@ from pydantic import BaseModel, ConfigDict
 class IndexStatus(StrEnum):
     BUILDING = auto()
     COMPLETE = auto()
+    CANCELLED = auto()
     FAILED = auto()
+
+
+class IndexPhase(StrEnum):
+    IDLE = auto()
+    DISCOVERING = auto()
+    CHUNKING = auto()
+    PARSING = auto()
+    GRAPH = auto()
+    PUBLISHING = auto()
+    CLEARING = auto()
 
 
 class DiscoveredFile(BaseModel):
@@ -159,7 +170,10 @@ class RepositoryIndexState(BaseModel):
     root: Path | None = None
     generation: IndexGeneration | None = None
     status: IndexStatus = IndexStatus.BUILDING
+    phase: IndexPhase = IndexPhase.IDLE
     dirty: bool = True
+    files_processed: int = 0
+    files_total: int = 0
     error: str | None = None
 
 
