@@ -278,6 +278,7 @@ class CoreRequestHandler:
                 | "connectors"
                 | "mcp"
                 | "loops"
+                | "repositoryIndex"
                 | "telemetry"
                 | "narration"
                 | "feedback"

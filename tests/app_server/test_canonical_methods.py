@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from git import Repo
 import pytest
 
 from tests.conftest import build_test_agent_loop
@@ -21,7 +24,12 @@ from vibe.app_server.protocol import (
     SessionShellCommandParams,
     SessionShellCommandResponse,
 )
+from vibe.app_server.repository_index import (
+    RepositoryIndexParams,
+    RepositoryIndexStatusResponse,
+)
 from vibe.app_server.session import AppServerSession
+from vibe.core.repository_index import RepositoryIndexService
 
 
 async def _session_with_history() -> tuple[AppServerClient, AppServerSession]:
@@ -43,6 +51,33 @@ async def test_wire_rejects_snake_case_params() -> None:
         await session.close()
 
     assert excinfo.value.error.code is ProtocolErrorCode.INVALID_PARAMS
+
+
+@pytest.mark.asyncio
+async def test_repository_index_status_routes_through_app_server(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    Repo.init(root, initial_branch="main")
+    service = RepositoryIndexService(root, tmp_path / "index")
+    await service.ensure_ready()
+    agent_loop = build_test_agent_loop(cwd=root, repository_index=service)
+    client = start_test_app_server(agent_loop)
+    session = await attach_test_app_server_session(client)
+
+    try:
+        result = await client.request(
+            "repositoryIndex/status",
+            RepositoryIndexParams(session_id=session.session_id),
+        )
+    finally:
+        await session.close()
+        await service.close()
+
+    response = RepositoryIndexStatusResponse.model_validate(result)
+    assert response.index.root == str(root)
+    assert response.index.status == "complete"
 
 
 @pytest.mark.asyncio
