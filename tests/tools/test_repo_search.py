@@ -146,3 +146,56 @@ async def test_dependency_mode_expands_two_hops_and_path_filters_results(
     assert "[imports] pkg/base.py" in rendered_tree
     assert result.dependency_trees[0].node_count == 3
     assert not result.dependency_trees[0].truncated
+
+
+@pytest.mark.asyncio
+async def test_symbol_mode_splits_natural_language_terms(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    Repo.init(root, initial_branch="main")
+    (root / "query.py").write_text(
+        "class FilteredRelation:\n    pass\n\ndef select_related():\n    pass\n",
+        encoding="utf-8",
+    )
+    service = RepositoryIndexService(root, tmp_path / "indexes")
+
+    result = await service.search(
+        "FilteredRelation select_related",
+        mode=RepositorySearchMode.SYMBOL,
+        max_results=20,
+    )
+
+    assert {match.symbol for match in result.matches} >= {
+        "FilteredRelation",
+        "select_related",
+    }
+
+
+@pytest.mark.asyncio
+async def test_symbol_mode_falls_back_to_text_and_suggests_split_queries(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    Repo.init(root, initial_branch="main")
+    (root / "notes.md").write_text(
+        "Hydration behavior for filtered relations.\n", encoding="utf-8"
+    )
+    service = RepositoryIndexService(root, tmp_path / "indexes")
+
+    result = await service.search(
+        "hydration missing_term", mode=RepositorySearchMode.SYMBOL, max_results=20
+    )
+
+    assert result.matches[0].path == "notes.md"
+    assert result.matches[0].relationship == "text_match"
+
+    empty = await service.search(
+        "unknown_concept another_unknown",
+        mode=RepositorySearchMode.SYMBOL,
+        max_results=20,
+    )
+    assert [(item.query, item.mode) for item in empty.suggestions[:2]] == [
+        ("unknown_concept", RepositorySearchMode.AUTO),
+        ("another_unknown", RepositorySearchMode.AUTO),
+    ]

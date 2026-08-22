@@ -699,6 +699,18 @@ class RepositoryIndexStore:
                 structural_rows = _structural_rows(
                     connection, generation.id, query, mode, _MAX_SEARCH_RESULTS
                 )
+                if mode is RepositorySearchMode.SYMBOL and not structural_rows:
+                    lexical_rows = connection.execute(
+                        """
+                        SELECT path, line_start, line_end, content,
+                               bm25(chunks_fts)
+                        FROM chunks_fts
+                        WHERE chunks_fts MATCH ? AND generation_id = ?
+                        ORDER BY bm25(chunks_fts), path, line_start
+                        LIMIT ?
+                        """,
+                        (match_query, generation.id, _MAX_SEARCH_RESULTS),
+                    ).fetchall()
                 structural_seed_paths = {str(row[0]) for row in structural_rows}
                 seed_paths = (
                     structural_seed_paths
@@ -1184,9 +1196,13 @@ def _structural_rows(
 ) -> list[tuple[Any, ...]]:
     if mode is RepositorySearchMode.TEXT:
         return []
-    pattern = f"%{query}%"
+    patterns = _structural_patterns(query)
+    symbol_predicate = " OR ".join(
+        "(s.name LIKE ? OR s.qualified_name LIKE ?)" for _ in patterns
+    )
+    symbol_params = tuple(value for pattern in patterns for value in (pattern, pattern))
     definition_rows = connection.execute(
-        """
+        f"""
         SELECT f.path, s.line_start, s.line_end,
                s.qualified_name,
                'defines', 'Python AST symbol definition'
@@ -1194,29 +1210,31 @@ def _structural_rows(
         JOIN symbol_cache AS s
           ON s.content_hash = f.content_hash AND s.language = f.language
         WHERE f.generation_id = ?
-          AND (s.name LIKE ? OR s.qualified_name LIKE ?)
+          AND ({symbol_predicate})
         ORDER BY CASE WHEN s.name = ? THEN 0 ELSE 1 END, f.path, s.line_start
         LIMIT ?
         """,
-        (generation_id, pattern, pattern, query, max_results),
+        (generation_id, *symbol_params, query, max_results),
     ).fetchall()
     if mode is not RepositorySearchMode.IMPACT:
+        reference_predicate = " OR ".join("r.name LIKE ?" for _ in patterns)
         reference_rows = connection.execute(
-            """
+            f"""
             SELECT f.path, r.line, r.line,
                    r.name,
                    r.kind, 'Python AST reference'
             FROM files AS f
             JOIN reference_cache AS r
               ON r.content_hash = f.content_hash AND r.language = f.language
-            WHERE f.generation_id = ? AND r.name LIKE ?
+            WHERE f.generation_id = ? AND ({reference_predicate})
             ORDER BY f.path, r.line
             LIMIT ?
             """,
-            (generation_id, pattern, max_results),
+            (generation_id, *patterns, max_results),
         ).fetchall()
         return [*definition_rows, *reference_rows][:max_results]
 
+    pattern = f"%{query}%"
     definition_rows = connection.execute(
         """
         SELECT f.path, s.line_start, s.line_end,
@@ -1282,3 +1300,8 @@ def _structural_rows(
             ).fetchall()
         )
     return impact_rows[:max_results]
+
+
+def _structural_patterns(query: str) -> tuple[str, ...]:
+    terms = re.findall(r"[^\W]+", query, flags=re.UNICODE)
+    return tuple(f"%{term}%" for term in dict.fromkeys(terms))

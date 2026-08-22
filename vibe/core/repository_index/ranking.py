@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
+import re
 
 from vibe.core.repository_index.models import (
     RepositoryModuleRole,
@@ -112,6 +113,16 @@ def suggest_repository_queries(
     groups: Sequence[RepositorySearchGroup],
 ) -> tuple[RepositoryQuerySuggestion, ...]:
     suggestions: list[RepositoryQuerySuggestion] = []
+    if not matches:
+        suggestions.extend(
+            RepositoryQuerySuggestion(
+                query=term,
+                mode=RepositorySearchMode.AUTO,
+                reason="Retry one searchable concept across text, symbols, and paths.",
+            )
+            for term in _query_terms(query)[:_MAX_QUERY_SUGGESTIONS]
+        )
+
     if definition := next(
         (match for match in matches if match.relationship == "defines"), None
     ):
@@ -151,6 +162,10 @@ def suggest_repository_queries(
             (suggestion.query, suggestion.mode, suggestion.path), suggestion
         )
     return tuple(unique.values())[:_MAX_QUERY_SUGGESTIONS]
+
+
+def _query_terms(query: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(re.findall(r"[^\W]+", query, flags=re.UNICODE)))
 
 
 def _refinement_mode(mode: RepositorySearchMode) -> RepositorySearchMode | None:
