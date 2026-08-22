@@ -20,7 +20,13 @@ from vibe.core.repository_index.models import (
     RepositorySearchMode,
     RepositorySearchResult,
 )
-from vibe.core.types import AssistantEvent, BaseEvent
+from vibe.core.types import (
+    AssistantEvent,
+    AvailableTool,
+    BaseEvent,
+    FunctionCall,
+    ToolCall,
+)
 
 
 class _RecordingIndexReader:
@@ -82,9 +88,12 @@ async def test_model_turn_runs_inside_pinned_index_scope_and_refreshes_prompt(
         assert f"Indexed roots: {tmp_path}" in system_prompt
         assert "recommend `/index status`" in system_prompt
         assert "Continue using `repo_search`" in system_prompt
-        assert "call\n`repo_search` before broad `grep`" in system_prompt
-        assert "Start with an\n`auto` query" in system_prompt
-        assert "Do not skip this initial mapping" in system_prompt
+        assert (
+            "first repository tool call in each user turn is constrained"
+            in system_prompt
+        )
+        assert "Use that call in `auto` mode" in system_prompt
+        assert "Do not treat this as a ceremonial call" in system_prompt
         yield AssistantEvent(content="indexed")
 
     monkeypatch.setattr(loop, "_perform_llm_turn", perform_turn)
@@ -111,6 +120,36 @@ def test_repo_search_is_only_exposed_when_index_reader_is_injected(
 
     assert "repo_search" not in without_index.tool_manager.available_tools
     assert "repo_search" in with_index.tool_manager.available_tools
+
+
+@pytest.mark.asyncio
+async def test_first_model_call_is_constrained_to_repo_search(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    Repo.init(root, initial_branch="main")
+    (root / "service.py").write_text("def target_service():\n    pass\n")
+    service = RepositoryIndexService(root, tmp_path / "indexes")
+    repo_search_call = ToolCall(
+        id="repo-map",
+        index=0,
+        function=FunctionCall(
+            name="repo_search", arguments='{"query":"target service","mode":"auto"}'
+        ),
+    )
+    backend = FakeBackend([
+        mock_llm_chunk(tool_calls=[repo_search_call]),
+        mock_llm_chunk(content="Mapped the repository."),
+    ])
+    loop = build_test_agent_loop(cwd=root, backend=backend, repository_index=service)
+
+    _ = [event async for event in loop.act("Fix the target service")]
+
+    assert [tool.function.name for tool in backend.requests_tools[0]] == ["repo_search"]
+    assert len(backend.requests_tools[1]) > 1
+    first_choice = backend.requests_tool_choices[0]
+    assert isinstance(first_choice, AvailableTool)
+    assert first_choice.function.name == "repo_search"
+    assert backend.requests_tool_choices[1] == "auto"
 
 
 @pytest.mark.asyncio

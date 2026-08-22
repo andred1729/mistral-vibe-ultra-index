@@ -474,6 +474,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._is_subagent = is_subagent
         self.repository_index = repository_index
         self._repository_index_generation: IndexGeneration | None = None
+        self._repository_search_required = False
         self.cache_store = cache_store or InMemoryCacheStore()
 
         self._defer_heavy_init = defer_heavy_init
@@ -1303,6 +1304,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             )
         if self._active_turn is not None:
             raise AgentLoopStateError("A turn is already active")
+        self._repository_search_required = (
+            "repo_search" in self.tool_manager.available_tools
+        )
         options = turn_options or AgentTurnOptions()
         self._active_turn = _ActiveTurn(
             subagent_runner=subagent_runner,
@@ -2400,6 +2404,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         duration = time.perf_counter() - start_time
         if result_model is None:
             raise ToolError("Tool did not yield a result")
+        if tool_call.tool_name == "repo_search":
+            self._repository_search_required = False
 
         result_dict = result_model.model_dump(mode="json")
         text = "\n".join(f"{k}: {v}" for k, v in result_dict.items())
@@ -2449,6 +2455,21 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             int(duration * 1000),
             "cancelled" if result_cancelled else "success",
         )
+
+    def _model_tools(self) -> tuple[list[AvailableTool], StrToolChoice | AvailableTool]:
+        available_tools = self.format_handler.get_available_tools(self.tool_manager)
+        default_choice = self.format_handler.get_tool_choice()
+        if not self._repository_search_required:
+            return available_tools, default_choice
+
+        repo_search = next(
+            (tool for tool in available_tools if tool.function.name == "repo_search"),
+            None,
+        )
+        if repo_search is None:
+            self._repository_search_required = False
+            return available_tools, default_choice
+        return [repo_search], repo_search
 
     async def _should_execute_tool(
         self, tool: BaseTool, args: BaseModel, tool_call_id: str
@@ -2718,11 +2739,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         active_model = model_override or self.config.get_active_model()
         provider = self.config.get_provider_for_model(active_model)
         start_time = time.perf_counter()
+        available_tools, tool_choice = self._model_tools()
         result = await self._complete(
             model=active_model,
             messages=self.messages,
-            tools=self.format_handler.get_available_tools(self.tool_manager),
-            tool_choice=self.format_handler.get_tool_choice(),
+            tools=available_tools,
+            tool_choice=tool_choice,
             call_type=call_type,
         )
         self.messages.append(result.message)
@@ -2743,8 +2765,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         provider = self.config.get_active_provider()
         backend_metadata = self._build_backend_metadata()
 
-        available_tools = self.format_handler.get_available_tools(self.tool_manager)
-        tool_choice = self.format_handler.get_tool_choice()
+        available_tools, tool_choice = self._model_tools()
         backend_messages = self._messages_for_backend(self.messages, active_model)
 
         last_user_message = self._last_user_message_from(backend_messages)
