@@ -6,7 +6,19 @@ from textual.widgets.text_area import Selection
 
 from tests.conftest import build_test_vibe_app
 from vibe.cli.commands import CommandRegistry
+from vibe.cli.textual_ui.app import VibeApp
 from vibe.cli.textual_ui.widgets.chat_input import ChatTextArea
+
+_TEST_CLICK_CHAIN_TIME_THRESHOLD = 5.0
+
+
+@pytest.fixture(autouse=True)
+def stable_click_chain_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pilot drains the event loop around every synthetic mouse event. Keep these
+    # behavior tests independent of host load while retaining a finite timeout.
+    monkeypatch.setattr(
+        VibeApp, "CLICK_CHAIN_TIME_THRESHOLD", _TEST_CLICK_CHAIN_TIME_THRESHOLD
+    )
 
 
 def _make_text_area(text: str) -> ChatTextArea:
@@ -277,7 +289,9 @@ async def test_pause_after_double_click_resets_to_char() -> None:
         await pilot.mouse_up(ta, offset=(2, 0))
         await pilot.pause(0.05)
 
-        ta._last_down_time = (ta._last_down_time or 0.0) - 1.0
+        ta._last_down_time = (
+            (ta._last_down_time or 0.0) - _TEST_CLICK_CHAIN_TIME_THRESHOLD - 1.0
+        )
 
         await pilot.mouse_down(ta, offset=(2, 0))
         await pilot.pause(0.05)

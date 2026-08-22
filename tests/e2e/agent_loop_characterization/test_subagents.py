@@ -10,13 +10,13 @@ from tests.e2e.agent_loop_characterization.support import (
     assert_tool_result_contains,
     assistant_text_chunks,
     single_tool_call_chunks,
-    wait_for_request_count_while_draining_child_output,
 )
 from tests.e2e.common import (
     SpawnedVibeProcessFixture,
     send_ctrl_c_until_quit_confirmation,
     wait_for_main_screen,
     wait_for_rendered_text,
+    wait_for_request_count_while_draining_child_output,
 )
 from tests.e2e.mock_server import ChatCompletionsRequestPayload, StreamingMockServer
 

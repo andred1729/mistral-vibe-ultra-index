@@ -267,7 +267,9 @@ max-nested-blocks = 5
 ignore_decorators = ["@*"]
 
 [tool.pytest.ini_options]
-addopts = "-vvvv -q -n auto --durations=10 --import-mode=importlib --maxschedchunk=1"
+# Several suites launch Git worktree subprocesses. Keep automatic parallelism
+# bounded so an 8+ core development host does not exhaust memory/process slots.
+addopts = "-vvvv -q -n auto --maxprocesses=2 --durations=10 --import-mode=importlib --maxschedchunk=1"
 timeout = 10
 markers = [
     "unified_supported: backend contract behavior implemented by the Unified Harness",

@@ -18,7 +18,7 @@ from tests.e2e.common import (
     send_ctrl_c_until_quit_confirmation,
     strip_ansi,
     wait_for_main_screen,
-    wait_for_request_count,
+    wait_for_request_count_while_draining_child_output,
 )
 from tests.e2e.mock_server import StreamingMockServer
 from vibe.utils.io import read_safe
@@ -94,8 +94,12 @@ def _finish_turn(
     expected_request_count: int,
     request_count_getter: Callable[[], int],
 ) -> None:
-    wait_for_request_count(
-        request_count_getter, expected_count=expected_request_count, timeout=10
+    wait_for_request_count_while_draining_child_output(
+        child,
+        captured,
+        request_count_getter,
+        expected_count=expected_request_count,
+        timeout=10,
     )
     child.expect(ansi_tolerant_pattern(expected_reply), timeout=10)
 

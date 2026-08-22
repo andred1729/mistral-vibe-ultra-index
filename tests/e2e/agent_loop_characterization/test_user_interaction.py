@@ -12,14 +12,13 @@ from tests.e2e.agent_loop_characterization.support import (
     assert_tool_result_contains,
     assistant_text_chunks,
     single_tool_call_chunks,
-    wait_for_request_count_while_draining_child_output,
 )
 from tests.e2e.common import (
     SpawnedVibeProcessFixture,
     send_ctrl_c_until_quit_confirmation,
     wait_for_main_screen,
     wait_for_rendered_text,
-    wait_for_request_count,
+    wait_for_request_count_while_draining_child_output,
 )
 from tests.e2e.mock_server import ChatCompletionsRequestPayload, StreamingMockServer
 
@@ -77,8 +76,12 @@ def test_ask_user_question_waits_for_answer_and_reports_it_to_the_model(
         child.send("Ask me for a mode")
         child.send("\r")
 
-        wait_for_request_count(
-            lambda: len(streaming_mock_server.requests), expected_count=1, timeout=10
+        wait_for_request_count_while_draining_child_output(
+            child,
+            captured,
+            lambda: len(streaming_mock_server.requests),
+            expected_count=1,
+            timeout=10,
         )
         _answer_first_question_option(child, captured)
         wait_for_request_count_while_draining_child_output(
