@@ -894,8 +894,20 @@ def _fts_match_query(query: str, *, mode: RepositorySearchMode) -> str:
     terms = re.findall(r"[^\W]+", query, flags=re.UNICODE)
     if not terms:
         raise ValueError("Repository search query must contain searchable text.")
-    operator = " AND " if mode is RepositorySearchMode.TEXT else " OR "
-    return operator.join(f'"{term}"' for term in terms)
+    if mode is not RepositorySearchMode.TEXT:
+        return " OR ".join(f'"{term}"' for term in terms)
+
+    clauses: list[str] = []
+    for match in re.finditer(r'"([^"]+)"|([^\s"]+)', query):
+        segment = match.group(1) or match.group(2)
+        segment_terms = re.findall(r"[^\W]+", segment, flags=re.UNICODE)
+        if not segment_terms:
+            continue
+        if match.group(1) is not None:
+            clauses.append(f'"{" ".join(segment_terms)}"')
+        else:
+            clauses.extend(f'"{term}"' for term in segment_terms)
+    return " AND ".join(clauses)
 
 
 def _normalize_path_filter(path: str | None) -> str | None:

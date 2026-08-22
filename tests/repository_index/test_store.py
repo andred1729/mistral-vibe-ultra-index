@@ -162,6 +162,38 @@ def test_text_search_requires_all_terms_while_auto_search_retains_recall(
     assert {match.path for match in broad.matches} == {"alpha.py", "beta.py", "both.py"}
 
 
+def test_text_search_treats_quoted_terms_as_an_exact_phrase(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    generation = store.publish(
+        root,
+        [_file("adjacent.py"), _file("separated.py")],
+        [
+            IndexChunk(
+                path="adjacent.py",
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="dependency graph",
+            ),
+            IndexChunk(
+                path="separated.py",
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="dependency directed graph",
+            ),
+        ],
+    )
+
+    result = store.search(
+        generation, '"dependency graph"', mode=RepositorySearchMode.TEXT, max_results=10
+    )
+
+    assert [match.path for match in result.matches] == ["adjacent.py"]
+
+
 def test_search_rejects_absolute_or_parent_path_filters(tmp_path: Path) -> None:
     root = tmp_path / "repository"
     root.mkdir()

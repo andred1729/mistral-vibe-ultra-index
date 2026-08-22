@@ -365,6 +365,13 @@ Before a dependency-relevant edit, use `repo_search` in impact mode to inspect
 direct dependents and related tests. Treat incomplete language or reference
 coverage as uncertainty, not proof that there is no downstream impact.
 
+Repository indexing is automatic. `/index` is a user-facing slash command, not
+a model tool. When the user asks about index health or when indexing reports a
+problem, recommend `/index status`. Recommend `/index refresh` after a suspected
+missed filesystem change, and reserve `/index rebuild` or `/index clear` for
+explicit recovery from a stale or corrupt index. Continue using `repo_search`
+for model-driven repository queries.
+
 Index generation: {generation.id}
 Indexed roots: {generation.root}
 Indexed files: {generation.file_count}
