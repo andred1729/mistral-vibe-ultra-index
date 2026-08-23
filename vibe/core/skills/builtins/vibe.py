@@ -742,8 +742,10 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
   files and symbols. Once a likely named locus is known, the next navigation
   action should be `impact`, or directed `dependency` when the question is what
   it requires or what depends on it. Use that graph step before broad
-  `grep`/`find` instead of manually tracing callers or imports. Results group
-  files by module boundary and label shared and test code.
+  `grep`/`find` instead of manually tracing callers or imports. Graph queries
+  require an exact path or unique symbol; ambiguous symbols return candidate
+  anchors for a narrower follow-up and are not traversed together. Results
+  group files by module boundary and label shared and test code.
 - `/whoami` - Display the Mistral signed-in user, workspace, and plan
 - `/voice` - Configure voice settings
 - `/mcp` - Display MCP servers and connector status; pass a server or connector

@@ -370,6 +370,11 @@ or both (`direction=both`). Do this graph step before returning to broad
 `grep`/`find`. Do not manually trace callers, imports, or consumers with broad
 shell searches when these graph modes can answer the question.
 
+Graph modes resolve anchors deterministically. Query them with an exact
+repository-relative path or a unique symbol. If an ambiguous result returns
+candidate anchors, inspect the candidates and repeat the graph query with one
+exact qualified symbol or path; do not traverse all candidates together.
+
 Use `repo_search` as the primary tool for locating symbols and implementations,
 understanding dependencies, finding related tests, estimating change impact, and
 discovering relevant code. Use `grep` for exact text or regular-expression

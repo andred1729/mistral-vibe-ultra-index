@@ -345,8 +345,9 @@ model uses the bounded `repo_search` tool for lexical, symbol, dependency, and
 impact queries; source files are not uploaded to build the index. Repository
 work begins with a task-shaped mapping query. Results identify feature, shared,
 test, and root modules, group matches by component, and suggest focused
-follow-up queries. Auto and dependency searches also include bounded, cycle-aware
-outgoing import/inheritance trees; impact searches provide the incoming view.
+follow-up queries. Graph queries resolve an exact repository path or unique
+symbol before traversal. Ambiguous symbols return bounded candidate anchors for
+a narrower follow-up instead of combining unrelated dependency trees.
 
 Use `/index` (or `/index status`) to inspect generation, progress, and language
 coverage. `/index refresh`, `/index rebuild`, `/index cancel`, and `/index clear`

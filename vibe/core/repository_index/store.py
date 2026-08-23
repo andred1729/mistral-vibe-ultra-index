@@ -19,10 +19,13 @@ from vibe.core.repository_index.models import (
     IndexChunk,
     IndexGeneration,
     IndexStatus,
+    RepositoryAnchorResolution,
+    RepositoryAnchorStatus,
     RepositoryDependencyDirection,
     RepositoryDependencyTree,
     RepositoryMap,
     RepositoryMapEntry,
+    RepositorySearchAnchor,
     RepositorySearchMatch,
     RepositorySearchMode,
     RepositorySearchResult,
@@ -46,6 +49,7 @@ _MAX_AUTO_RESULTS = 5
 _MAX_AUTO_MATCHES_PER_PATH = 1
 _MAX_AUTO_SNIPPET_BYTES = 400
 _MAX_IMPACT_DEFINITIONS = 5
+_MAX_ANCHOR_CANDIDATES = 20
 _MAX_MAP_FILES = 200
 _MAX_MAP_SYMBOLS_PER_FILE = 20
 _MAX_DEPENDENCY_TREE_ROOTS = 3
@@ -60,6 +64,17 @@ class RepositoryIndexCorruptError(Exception): ...
 class _SearchContext:
     incoming_components: dict[str, frozenset[str]]
     dependency_trees: tuple[RepositoryDependencyTree, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedSearchAnchor:
+    resolution: RepositoryAnchorResolution
+    structural_rows: tuple[tuple[Any, ...], ...]
+
+    @property
+    def seed_paths(self) -> set[str]:
+        anchor = self.resolution.resolved_anchor
+        return {anchor.path} if anchor is not None else set()
 
 
 class RepositoryIndexStore:
@@ -685,15 +700,11 @@ class RepositoryIndexStore:
         if max_results < 1 or max_results > _MAX_SEARCH_RESULTS:
             raise ValueError("max_results must be between 1 and 100.")
         path_prefix = _normalize_path_filter(path)
-        match_query = _fts_match_query(query, mode=mode)
         lexical_rows: list[tuple[Any, ...]] = []
+        anchor_resolution: RepositoryAnchorResolution | None = None
         try:
             with closing(self._connect(read_only=True)) as connection:
-                if mode in {
-                    RepositorySearchMode.AUTO,
-                    RepositorySearchMode.TEXT,
-                    RepositorySearchMode.DEPENDENCY,
-                }:
+                if mode in {RepositorySearchMode.AUTO, RepositorySearchMode.TEXT}:
                     lexical_rows = connection.execute(
                         """
                         SELECT path, line_start, line_end, content,
@@ -703,11 +714,38 @@ class RepositoryIndexStore:
                         ORDER BY bm25(chunks_fts), path, line_start
                         LIMIT ?
                         """,
-                        (match_query, generation.id, _MAX_SEARCH_CANDIDATES),
+                        (
+                            _fts_match_query(query, mode=mode),
+                            generation.id,
+                            _MAX_SEARCH_CANDIDATES,
+                        ),
                     ).fetchall()
-                structural_rows = _structural_rows(
-                    connection, generation.id, query, mode, _MAX_SEARCH_CANDIDATES
-                )
+                if mode in {
+                    RepositorySearchMode.DEPENDENCY,
+                    RepositorySearchMode.IMPACT,
+                }:
+                    resolved = _resolve_dependency_anchor(
+                        connection, generation.id, query
+                    )
+                    anchor_resolution = resolved.resolution
+                    structural_rows = (
+                        list(resolved.structural_rows)
+                        if mode is RepositorySearchMode.DEPENDENCY
+                        else _structural_rows(
+                            connection,
+                            generation.id,
+                            query,
+                            mode,
+                            _MAX_SEARCH_CANDIDATES,
+                        )
+                        if resolved.seed_paths
+                        else []
+                    )
+                else:
+                    resolved = None
+                    structural_rows = _structural_rows(
+                        connection, generation.id, query, mode, _MAX_SEARCH_CANDIDATES
+                    )
                 if mode is RepositorySearchMode.SYMBOL and not structural_rows:
                     lexical_rows = connection.execute(
                         """
@@ -718,21 +756,30 @@ class RepositoryIndexStore:
                         ORDER BY bm25(chunks_fts), path, line_start
                         LIMIT ?
                         """,
-                        (match_query, generation.id, _MAX_SEARCH_CANDIDATES),
+                        (
+                            _fts_match_query(query, mode=mode),
+                            generation.id,
+                            _MAX_SEARCH_CANDIDATES,
+                        ),
                     ).fetchall()
-                seed_paths = _search_seed_paths(
-                    mode=mode,
-                    lexical_rows=lexical_rows,
-                    structural_rows=structural_rows,
+                seed_paths = (
+                    resolved.seed_paths
+                    if resolved is not None and mode is RepositorySearchMode.DEPENDENCY
+                    else _search_seed_paths(
+                        mode=mode,
+                        lexical_rows=lexical_rows,
+                        structural_rows=structural_rows,
+                    )
                 )
-                seed_paths.update(
-                    str(row[0])
-                    for row in connection.execute(
-                        "SELECT path FROM files WHERE generation_id = ? "
-                        "AND path LIKE ? LIMIT 20",
-                        (generation.id, f"%{query}%"),
-                    ).fetchall()
-                )
+                if mode is not RepositorySearchMode.DEPENDENCY:
+                    seed_paths.update(
+                        str(row[0])
+                        for row in connection.execute(
+                            "SELECT path FROM files WHERE generation_id = ? "
+                            "AND path LIKE ? LIMIT 20",
+                            (generation.id, f"%{query}%"),
+                        ).fetchall()
+                    )
                 dependency_rows = (
                     _dependency_rows(
                         connection,
@@ -878,6 +925,7 @@ class RepositoryIndexStore:
                 if mode is RepositorySearchMode.AUTO
                 else search_context.dependency_trees
             ),
+            anchor_resolution=anchor_resolution,
             structural_coverage=generation.structural_file_count > 0,
         )
 
@@ -1025,6 +1073,92 @@ def _matches_path_filter(path: str, prefix: str | None) -> bool:
     return prefix is None or path == prefix or path.startswith(f"{prefix}/")
 
 
+def _resolve_dependency_anchor(
+    connection: sqlite3.Connection, generation_id: int, query: str
+) -> _ResolvedSearchAnchor:
+    normalized_query = query.strip().replace("\\", "/").removeprefix("./")
+    path_row = connection.execute(
+        "SELECT path FROM files WHERE generation_id = ? AND path = ?",
+        (generation_id, normalized_query),
+    ).fetchone()
+    if path_row is not None:
+        anchor = RepositorySearchAnchor(path=str(path_row[0]))
+        return _ResolvedSearchAnchor(
+            resolution=RepositoryAnchorResolution(
+                status=RepositoryAnchorStatus.RESOLVED,
+                resolved_anchor=anchor,
+                candidate_count=1,
+            ),
+            structural_rows=(
+                (
+                    anchor.path,
+                    1,
+                    1,
+                    anchor.path,
+                    "anchor",
+                    "exact repository path anchor",
+                ),
+            ),
+        )
+
+    rows = connection.execute(
+        """
+        SELECT f.path, s.line_start, s.line_end, s.qualified_name,
+               COUNT(*) OVER()
+        FROM files AS f
+        JOIN symbol_cache AS s
+          ON s.content_hash = f.content_hash AND s.language = f.language
+        WHERE f.generation_id = ? AND (s.name = ? OR s.qualified_name = ?)
+        ORDER BY CASE WHEN s.qualified_name = ? THEN 0 ELSE 1 END,
+                 f.path, s.line_start, s.qualified_name
+        LIMIT ?
+        """,
+        (generation_id, query, query, query, _MAX_ANCHOR_CANDIDATES),
+    ).fetchall()
+    anchors = tuple(
+        RepositorySearchAnchor(
+            path=str(row[0]),
+            line_start=int(row[1]),
+            line_end=int(row[2]),
+            symbol=str(row[3]),
+        )
+        for row in rows
+    )
+    if len(anchors) != 1:
+        status = (
+            RepositoryAnchorStatus.AMBIGUOUS
+            if anchors
+            else RepositoryAnchorStatus.NEEDS_ANCHOR
+        )
+        return _ResolvedSearchAnchor(
+            resolution=RepositoryAnchorResolution(
+                status=status,
+                candidate_anchors=anchors,
+                candidate_count=int(rows[0][4]) if rows else 0,
+            ),
+            structural_rows=(),
+        )
+
+    anchor = anchors[0]
+    return _ResolvedSearchAnchor(
+        resolution=RepositoryAnchorResolution(
+            status=RepositoryAnchorStatus.RESOLVED,
+            resolved_anchor=anchor,
+            candidate_count=1,
+        ),
+        structural_rows=(
+            (
+                anchor.path,
+                anchor.line_start,
+                anchor.line_end,
+                anchor.symbol,
+                "defines",
+                "exact Python AST symbol definition anchor",
+            ),
+        ),
+    )
+
+
 def _search_seed_paths(
     *,
     mode: RepositorySearchMode,
@@ -1047,10 +1181,12 @@ def _search_candidates(
     dependency_matches: Sequence[RepositorySearchMatch],
 ) -> tuple[RepositorySearchMatch, ...]:
     if mode is RepositorySearchMode.DEPENDENCY:
-        definitions = tuple(
-            match for match in structural_matches if match.relationship == "defines"
+        anchors = tuple(
+            match
+            for match in structural_matches
+            if match.relationship in {"anchor", "defines"}
         )
-        return (*definitions, *dependency_matches)
+        return (*anchors, *dependency_matches)
     if mode is RepositorySearchMode.AUTO:
         related_tests = tuple(
             match for match in dependency_matches if match.relationship == "tested_by"

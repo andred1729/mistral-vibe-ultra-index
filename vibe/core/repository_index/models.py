@@ -91,6 +91,12 @@ class RepositoryDependencyDirection(StrEnum):
     BOTH = auto()
 
 
+class RepositoryAnchorStatus(StrEnum):
+    RESOLVED = auto()
+    AMBIGUOUS = auto()
+    NEEDS_ANCHOR = auto()
+
+
 class RepositoryModuleRole(StrEnum):
     FEATURE = auto()
     SHARED = auto()
@@ -242,6 +248,24 @@ class RepositoryDependencyTree(BaseModel):
     truncated: bool = False
 
 
+class RepositorySearchAnchor(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str
+    symbol: str | None = None
+    line_start: int = 1
+    line_end: int = 1
+
+
+class RepositoryAnchorResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: RepositoryAnchorStatus
+    resolved_anchor: RepositorySearchAnchor | None = None
+    candidate_anchors: tuple[RepositorySearchAnchor, ...] = ()
+    candidate_count: int = Field(default=0, ge=0)
+
+
 class RepositorySearchResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
@@ -254,6 +278,7 @@ class RepositorySearchResult(BaseModel):
     groups: tuple[RepositorySearchGroup, ...] = ()
     suggestions: tuple[RepositoryQuerySuggestion, ...] = ()
     dependency_trees: tuple[RepositoryDependencyTree, ...] = ()
+    anchor_resolution: RepositoryAnchorResolution | None = None
     structural_coverage: bool = False
 
 

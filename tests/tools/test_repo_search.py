@@ -24,6 +24,7 @@ def test_repo_search_arguments_guide_staged_graph_queries() -> None:
     assert "auto is a compact locator" in parameters["mode"]["description"]
     assert "what could break" in parameters["mode"]["description"]
     assert "known likely locus" in parameters["mode"]["description"]
+    assert "candidate anchors" in parameters["mode"]["description"]
     assert "what the locus calls or requires" in parameters["direction"]["description"]
     assert "incoming callers and consumers" in parameters["direction"]["description"]
     assert "bounded two-way neighborhood" in parameters["direction"]["description"]
@@ -31,6 +32,36 @@ def test_repo_search_arguments_guide_staged_graph_queries() -> None:
     assert "Once you identify a likely named function" in tool_guidance
     assert "before returning to broad `grep`/`find`" in tool_guidance
     assert "Do not request broad dependency trees" in tool_guidance
+
+
+def test_repo_search_formats_ambiguous_anchor_result(tmp_path: Path) -> None:
+    result = RepositorySearchResult.model_validate({
+        "generation": {
+            "id": 1,
+            "root": tmp_path,
+            "status": "complete",
+            "file_count": 2,
+            "created_at": "now",
+        },
+        "query": "run",
+        "mode": "dependency",
+        "dependency_direction": "dependents",
+        "total_matches": 0,
+        "matches": [],
+        "anchor_resolution": {
+            "status": "ambiguous",
+            "candidate_count": 2,
+            "candidate_anchors": [
+                {"path": "first.py", "symbol": "First.run"},
+                {"path": "second.py", "symbol": "Second.run"},
+            ],
+        },
+    })
+
+    display = RepoSearch.format_result_display(result)
+
+    assert display.text == "Repo_Search"
+    assert display.suffix == "2 candidate anchors"
 
 
 @pytest.mark.asyncio

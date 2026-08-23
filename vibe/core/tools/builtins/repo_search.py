@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 from pydantic import BaseModel, Field
 
 from vibe.core.repository_index.models import (
+    RepositoryAnchorStatus,
     RepositoryDependencyDirection,
     RepositorySearchMode,
     RepositorySearchResult,
@@ -35,7 +36,10 @@ class RepoSearchArgs(BaseModel):
             "auto is a compact locator for likely files and symbols; text finds "
             "lexical evidence; symbol finds definitions/references; impact finds "
             "direct callers or consumers, related tests, and what could break; "
-            "dependency traverses the graph around a known likely locus."
+            "dependency traverses the graph around a known likely locus. Graph "
+            "modes require an exact repository path or unique symbol; ambiguous "
+            "symbols return candidate anchors without traversing until you choose "
+            "one."
         ),
     )
     direction: RepositoryDependencyDirection = Field(
@@ -73,6 +77,23 @@ class RepoSearch(
 
     @classmethod
     def format_result_display(cls, result: RepositorySearchResult) -> ToolResultDisplay:
+        resolution = result.anchor_resolution
+        if (
+            resolution is not None
+            and resolution.status is RepositoryAnchorStatus.AMBIGUOUS
+        ):
+            return ToolResultDisplay(
+                success=True,
+                message="Repo_Search",
+                suffix=f"{resolution.candidate_count} candidate anchors",
+            )
+        if (
+            resolution is not None
+            and resolution.status is RepositoryAnchorStatus.NEEDS_ANCHOR
+        ):
+            return ToolResultDisplay(
+                success=True, message="Repo_Search", suffix="anchor required"
+            )
         returned = len(result.matches)
         return ToolResultDisplay(
             success=True,

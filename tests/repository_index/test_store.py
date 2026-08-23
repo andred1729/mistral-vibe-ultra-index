@@ -12,6 +12,7 @@ from vibe.core.repository_index.models import (
     HydratedGraph,
     IndexChunk,
     IndexStatus,
+    RepositoryAnchorStatus,
     RepositoryDependencyDirection,
     RepositorySearchMode,
 )
@@ -297,6 +298,162 @@ def test_auto_search_suggests_anchored_impact_for_definition(tmp_path: Path) -> 
         or suggestion.query != "squash migrations"
         for suggestion in result.suggestions
     )
+
+
+def test_dependency_search_resolves_exact_path_without_lexical_seeds(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    generation = store.publish(
+        root,
+        [_file("pkg/service.py", "service"), _file("apps/consumer.py", "consumer")],
+        [
+            IndexChunk(
+                path="pkg/service.py",
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="SERVICE = True",
+            ),
+            IndexChunk(
+                path="apps/consumer.py",
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="service consumer",
+            ),
+        ],
+        graph=HydratedGraph(
+            edges=(
+                GraphEdge(
+                    source="apps/consumer.py",
+                    target="pkg/service.py",
+                    kind=GraphEdgeKind.IMPORTS,
+                ),
+            ),
+            scores=(
+                FileGraphScore(path="pkg/service.py", importance=0.1, component=0),
+                FileGraphScore(path="apps/consumer.py", importance=0.1, component=1),
+            ),
+            topology_fingerprint="graph",
+        ),
+    )
+
+    result = store.search(
+        generation,
+        "pkg/service.py",
+        mode=RepositorySearchMode.DEPENDENCY,
+        direction=RepositoryDependencyDirection.DEPENDENTS,
+        max_results=20,
+    )
+
+    assert result.anchor_resolution is not None
+    assert result.anchor_resolution.status is RepositoryAnchorStatus.RESOLVED
+    assert result.anchor_resolution.resolved_anchor is not None
+    assert result.anchor_resolution.resolved_anchor.path == "pkg/service.py"
+    assert result.anchor_resolution.candidate_count == 1
+    assert result.dependency_trees[0].root == "pkg/service.py"
+    assert {match.path for match in result.matches} == {
+        "pkg/service.py",
+        "apps/consumer.py",
+    }
+
+
+@pytest.mark.parametrize(
+    "mode", [RepositorySearchMode.DEPENDENCY, RepositorySearchMode.IMPACT]
+)
+def test_graph_search_returns_ambiguous_symbol_anchors_without_traversal(
+    tmp_path: Path, mode: RepositorySearchMode
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    sources = {
+        "pkg/first.py": "class First:\n    def run(self):\n        return 1\n",
+        "pkg/second.py": "class Second:\n    def run(self):\n        return 2\n",
+    }
+    generation = store.publish(
+        root,
+        [_file(path, path) for path in sources],
+        facts=[
+            parse_python_facts(path, path, source) for path, source in sources.items()
+        ],
+    )
+
+    result = store.search(generation, "run", mode=mode, max_results=20)
+
+    assert result.anchor_resolution is not None
+    assert result.anchor_resolution.status is RepositoryAnchorStatus.AMBIGUOUS
+    assert result.anchor_resolution.candidate_count == 2
+    assert {
+        (anchor.path, anchor.symbol)
+        for anchor in result.anchor_resolution.candidate_anchors
+    } == {("pkg/first.py", "First.run"), ("pkg/second.py", "Second.run")}
+    assert result.matches == ()
+    assert result.dependency_trees == ()
+
+
+def test_graph_search_requires_an_exact_anchor(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    generation = store.publish(
+        root,
+        [_file("pkg/service.py")],
+        [
+            IndexChunk(
+                path="pkg/service.py",
+                ordinal=0,
+                line_start=1,
+                line_end=1,
+                content="migration optimizer service",
+            )
+        ],
+    )
+
+    result = store.search(
+        generation,
+        "migration optimizer service",
+        mode=RepositorySearchMode.DEPENDENCY,
+        max_results=20,
+    )
+
+    assert result.anchor_resolution is not None
+    assert result.anchor_resolution.status is RepositoryAnchorStatus.NEEDS_ANCHOR
+    assert result.anchor_resolution.candidate_anchors == ()
+    assert result.matches == ()
+    assert result.dependency_trees == ()
+
+
+def test_ambiguous_anchor_candidates_are_bounded_and_report_total(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+    store = RepositoryIndexStore(tmp_path / "repository.sqlite3")
+    sources = {
+        f"pkg/module_{index}.py": f"class Service{index}:\n    def run(self):\n        return {index}\n"
+        for index in range(25)
+    }
+    generation = store.publish(
+        root,
+        [_file(path, path) for path in sources],
+        facts=[
+            parse_python_facts(path, path, source) for path, source in sources.items()
+        ],
+    )
+
+    result = store.search(
+        generation, "run", mode=RepositorySearchMode.DEPENDENCY, max_results=20
+    )
+
+    assert result.anchor_resolution is not None
+    assert result.anchor_resolution.status is RepositoryAnchorStatus.AMBIGUOUS
+    assert result.anchor_resolution.candidate_count == 25
+    assert len(result.anchor_resolution.candidate_anchors) == 20
+    assert result.matches == ()
 
 
 def test_auto_search_ranks_source_from_beyond_initial_fts_window(
